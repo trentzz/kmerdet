@@ -42,13 +42,90 @@ pub struct FilterConfig {
 }
 
 /// Run tumor-informed filtering on detection results against expected variants.
+///
+/// For each expected variant, attempts to find a matching detected call
+/// (using either reference mode or alt-sequence mode depending on config),
+/// then checks that the match passes all filter conditions (coverage, VAF,
+/// expression, variant type).
 pub fn filter_results(
-    _calls: &[VariantCall],
-    _expected: &[ExpectedVariant],
-    _config: &FilterConfig,
+    calls: &[VariantCall],
+    expected: &[ExpectedVariant],
+    config: &FilterConfig,
 ) -> Result<Vec<FilterResult>> {
-    // TODO Phase 7: Implement filtering engine
-    todo!("filter engine not yet implemented")
+    let mut results = Vec::new();
+
+    for ev in expected {
+        // Step 1: Find matching call using the configured mode
+        let matched_call = if config.use_alt {
+            alt_mode::find_match(ev, calls)
+        } else {
+            reference_mode::find_match(ev, calls)
+        };
+
+        // Step 2: Check if the match passes all filter conditions
+        let (found, call, notes) = match matched_call {
+            Some(call) => {
+                let mut fails = Vec::new();
+                if !conditions::passes_coverage(call, config.min_coverage) {
+                    fails.push(format!(
+                        "coverage {} < {}",
+                        call.min_coverage, config.min_coverage
+                    ));
+                }
+                if !conditions::passes_vaf(call, config.min_vaf) {
+                    fails.push(format!("VAF {:.6} < {}", call.rvaf, config.min_vaf));
+                }
+                if !conditions::passes_expression(call, config.min_expression) {
+                    fails.push(format!(
+                        "expression {:.2} < {}",
+                        call.expression, config.min_expression
+                    ));
+                }
+                if !conditions::passes_type(call, &config.types) {
+                    fails.push(format!(
+                        "type {} not in allowed types",
+                        call.variant_type
+                    ));
+                }
+
+                if fails.is_empty() {
+                    ("Found".to_string(), Some(call), "PASS".to_string())
+                } else {
+                    (
+                        "Not Found".to_string(),
+                        Some(call),
+                        fails.join("; "),
+                    )
+                }
+            }
+            None => (
+                "Not Found".to_string(),
+                None,
+                "No matching variant detected".to_string(),
+            ),
+        };
+
+        // Step 3: Build FilterResult
+        results.push(FilterResult {
+            sample: call
+                .map(|c| c.sample.clone())
+                .unwrap_or_default(),
+            chrom: ev.chrom.clone(),
+            pos: ev.pos,
+            ref_allele: ev.ref_allele.clone(),
+            alt_allele: ev.alt_allele.clone(),
+            variant_type: ev.variant_type.clone(),
+            found,
+            filter_notes: notes,
+            kmer_vaf: call.map(|c| c.rvaf),
+            kmer_min_coverage: call.map(|c| c.min_coverage),
+            kmer_expression: call.map(|c| c.expression),
+            ref_sequence: call.map(|c| c.ref_sequence.clone()),
+            variant_sequence: call.map(|c| c.alt_sequence.clone()),
+        });
+    }
+
+    Ok(results)
 }
 
 /// An expected variant from the reference/targets file.

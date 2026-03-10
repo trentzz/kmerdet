@@ -9,10 +9,16 @@ use crate::variant::VariantCall;
 
 /// Try to find a matching detected call for an expected variant
 /// using alt-sequence matching (full ALT_SEQUENCE comparison).
+///
+/// This is more permissive than reference mode — it checks whether the
+/// expected variant's alt_allele appears anywhere within the call's
+/// alt_sequence. This handles cases where coordinate-based representation
+/// differs but the actual sequence is the same (common with INDELs).
 pub fn find_match<'a>(
-    _expected: &ExpectedVariant,
-    _calls: &'a [VariantCall],
+    expected: &ExpectedVariant,
+    calls: &'a [VariantCall],
 ) -> Option<&'a VariantCall> {
-    // TODO Phase 7: Implement alt-mode matching
-    todo!("alt mode matching not yet implemented")
+    calls
+        .iter()
+        .find(|call| call.alt_sequence.contains(&expected.alt_allele))
 }
