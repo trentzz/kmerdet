@@ -1,0 +1,54 @@
+[package]
+name = "kmerdet"
+version = "0.1.0"
+edition = "2021"
+description = "K-mer based variant detection for targeted liquid biopsy monitoring"
+license = "MIT"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+
+# Parallelism
+rayon = "1.10"
+
+# Linear algebra
+nalgebra = "0.33"
+
+# FASTA parsing
+needletail = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CSV/TSV
+csv = "1.3"
+
+# Excel
+rust_xlsxwriter = "0.80"
+
+# Hash maps
+hashbrown = "0.15"
+indexmap = { version = "2", features = ["serde"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Progress reporting
+indicatif = "0.17"
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
