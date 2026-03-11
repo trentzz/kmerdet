@@ -1,5 +1,6 @@
 pub mod classifier;
 pub mod cluster;
+pub mod normalize;
 pub mod quantifier;
 
 /// The type of variant detected.
