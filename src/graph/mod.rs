@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod dot;
 pub mod pathfind;
 
 use std::collections::HashMap;

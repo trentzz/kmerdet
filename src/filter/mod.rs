@@ -1,6 +1,7 @@
 pub mod alt_mode;
 pub mod conditions;
 pub mod reference_mode;
+pub mod report;
 
 use anyhow::Result;
 

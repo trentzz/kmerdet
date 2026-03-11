@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod cli;
 pub mod config;
 pub mod filter;
@@ -6,6 +7,7 @@ pub mod jellyfish;
 pub mod kmer;
 pub mod output;
 pub mod sequence;
+pub mod trace;
 pub mod variant;
 pub mod walker;
 
@@ -30,6 +32,7 @@ pub fn run(cli: cli::Cli) -> Result<()> {
         cli::Command::Plot(args) => cli::plot::run(args, &cli.global),
         cli::Command::Coverage(args) => cli::coverage::run(args, &cli.global),
         cli::Command::Run(args) => cli::run::run(args, &cli.global),
+        cli::Command::Benchmark(args) => cli::benchmark::run(args, &cli.global),
     }
 }
 

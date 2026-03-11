@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+pub mod benchmark;
 pub mod coverage;
 pub mod detect;
 pub mod filter;
@@ -83,4 +84,6 @@ pub enum Command {
     Coverage(coverage::CoverageArgs),
     /// Full pipeline: detect -> merge -> filter (-> optional stats/plot)
     Run(run::RunArgs),
+    /// Compare detection results against ground truth
+    Benchmark(benchmark::BenchmarkArgs),
 }

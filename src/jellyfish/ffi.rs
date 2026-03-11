@@ -40,7 +40,7 @@ mod bindings {
         }
     }
 
-    impl super::KmerDatabase for JellyfishDb {
+    impl crate::jellyfish::KmerDatabase for JellyfishDb {
         fn query(&self, kmer: &str) -> u64 {
             let Ok(c_kmer) = CString::new(kmer) else {
                 return 0;
