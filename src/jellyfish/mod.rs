@@ -1,5 +1,6 @@
 pub mod ffi;
 pub mod header;
+pub mod reader;
 
 /// Trait abstracting k-mer database lookups.
 ///

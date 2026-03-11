@@ -62,29 +62,24 @@ pub struct RunArgs {
     pub plot: bool,
 }
 
-/// Open a jellyfish database (only available when compiled with jellyfish support).
-#[cfg(has_jellyfish)]
+/// Open a jellyfish database using the pure Rust reader.
 fn open_db(path: &std::path::Path) -> Result<Box<dyn KmerDatabase>> {
-    let db = crate::jellyfish::ffi::JellyfishDb::open(path)?;
-    Ok(Box::new(db))
+    let reader = crate::jellyfish::reader::JellyfishReader::open(path)?;
+    Ok(Box::new(reader))
 }
 
-/// Stub when compiled without jellyfish support.
-#[cfg(not(has_jellyfish))]
-fn open_db(_path: &std::path::Path) -> Result<Box<dyn KmerDatabase>> {
-    anyhow::bail!(
-        "kmerdet was compiled without jellyfish support.\n\
-         Install jellyfish 2.2+ and rebuild, or provide a pre-counted database."
-    )
-}
-
-/// Determine the k-mer length from CLI args or the DB header.
+/// Determine the k-mer length from the DB header.
 fn resolve_kmer_length(db_path: &std::path::Path) -> Result<u8> {
-    let header = crate::jellyfish::header::JfHeader::from_file(db_path)
-        .context("reading jellyfish header to determine k-mer length")?;
+    // Use jellyfish-reader to read the header
+    let header = jellyfish_reader::FileHeader::read(
+        &mut std::fs::File::open(db_path)
+            .with_context(|| format!("opening jellyfish DB: {}", db_path.display()))?,
+    )
+    .context("reading jellyfish header")?;
 
     header
-        .kmer_length()
+        .k()
+        .map(|k| k as u8)
         .context("could not determine k-mer length from DB header; use --kmer-length to specify")
 }
 
