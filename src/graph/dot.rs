@@ -15,6 +15,32 @@ use super::KmerGraph;
 use crate::filter::{FilterConfig, FilterResult};
 use crate::sequence::path::KmerPath;
 
+// -----------------------------------------------------------------------
+// Convenience public API
+// -----------------------------------------------------------------------
+
+/// Export a KmerGraph to DOT format (no path highlighting).
+///
+/// This is a thin wrapper around [`export_dot`] for a simpler call-site.
+pub fn to_dot(graph: &KmerGraph) -> String {
+    export_dot(graph, "", None)
+}
+
+/// Export a KmerGraph to DOT format, highlighting the given paths.
+///
+/// `ref_path_idx` indicates which element of `paths` is the reference path
+/// so it can be colored differently (blue for reference, purple for alternatives).
+pub fn to_dot_with_paths(graph: &KmerGraph, paths: &[KmerPath], ref_path_idx: usize) -> String {
+    let path_refs: Vec<&KmerPath> = paths.iter().collect();
+    export_dot_with_legend(graph, "kmer_graph", Some(&path_refs), Some(ref_path_idx))
+}
+
+/// Write a DOT representation of `graph` directly to a file.
+pub fn write_dot(graph: &KmerGraph, path: &Path) -> Result<()> {
+    let dot = to_dot(graph);
+    write_dot_file(&dot, path)
+}
+
 /// Truncate a k-mer string for display: first 5 + "..." + last 5 if longer than 15 chars.
 fn truncate_kmer(kmer: &str) -> String {
     if kmer.len() > 15 {
@@ -104,11 +130,26 @@ pub fn export_dot(
             write!(dot, "    n{} -> n{} [", from_idx, edge.to).unwrap();
 
             if is_highlighted {
-                write!(dot, "color=blue, penwidth=3, style=bold").unwrap();
+                write!(
+                    dot,
+                    "color=blue, penwidth=3, style=bold, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
             } else if edge.is_reference {
-                write!(dot, "color=green, penwidth=1").unwrap();
+                write!(
+                    dot,
+                    "color=green, penwidth=1, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
             } else {
-                write!(dot, "color=red, penwidth=2, style=dashed").unwrap();
+                write!(
+                    dot,
+                    "color=red, penwidth=2, style=dashed, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
             }
 
             writeln!(dot, "];").unwrap();
@@ -118,6 +159,233 @@ pub fn export_dot(
     writeln!(dot, "}}").unwrap();
 
     dot
+}
+
+/// Export a KmerGraph to DOT format with a legend and per-path coloring.
+///
+/// When `ref_path_idx` is provided, the reference path is drawn in blue
+/// and alternative paths in purple. A legend subgraph is appended that
+/// explains the color coding.
+pub fn export_dot_with_legend(
+    graph: &KmerGraph,
+    target_name: &str,
+    highlight_paths: Option<&[&KmerPath]>,
+    ref_path_idx: Option<usize>,
+) -> String {
+    let mut dot = String::new();
+
+    writeln!(
+        dot,
+        "digraph \"{}\" {{",
+        escape_dot_string(target_name)
+    )
+    .unwrap();
+    writeln!(dot, "    rankdir=LR;").unwrap();
+    writeln!(
+        dot,
+        "    label=\"{}\";",
+        escape_dot_string(target_name)
+    )
+    .unwrap();
+    writeln!(dot, "    fontname=\"Courier\";").unwrap();
+    writeln!(dot, "    node [fontname=\"Courier\"];").unwrap();
+    writeln!(dot, "    edge [fontname=\"Courier\"];").unwrap();
+    writeln!(dot).unwrap();
+
+    // Build per-path edge sets for distinct coloring.
+    let ref_edges = build_path_edge_set(graph, highlight_paths, ref_path_idx, true);
+    let alt_edges = build_path_edge_set(graph, highlight_paths, ref_path_idx, false);
+
+    // Emit nodes (same styling as export_dot).
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        write!(dot, "    n{} [", idx).unwrap();
+        if node.kmer == "BigBang" {
+            write!(
+                dot,
+                "shape=doublecircle, width=0.3, style=filled, fillcolor=\"#90EE90\", label=\"S\"",
+            )
+            .unwrap();
+        } else if node.kmer == "BigCrunch" {
+            write!(
+                dot,
+                "shape=doublecircle, width=0.3, style=filled, fillcolor=\"#FF6347\", label=\"T\"",
+            )
+            .unwrap();
+        } else {
+            let label = format!("{}\\n{}", truncate_kmer(&node.kmer), node.count);
+            if node.is_reference {
+                write!(
+                    dot,
+                    "style=filled, fillcolor=\"#ADD8E6\", label=\"{}\"",
+                    label
+                )
+                .unwrap();
+            } else {
+                write!(
+                    dot,
+                    "style=filled, fillcolor=\"#FFFACD\", label=\"{}\"",
+                    label
+                )
+                .unwrap();
+            }
+        }
+        writeln!(dot, "];").unwrap();
+    }
+
+    writeln!(dot).unwrap();
+
+    // Emit edges with per-path coloring.
+    for (&from_idx, edges) in &graph.edges {
+        for edge in edges {
+            let pair = (from_idx, edge.to);
+
+            write!(dot, "    n{} -> n{} [", from_idx, edge.to).unwrap();
+
+            if ref_edges.contains(&pair) {
+                write!(
+                    dot,
+                    "color=blue, penwidth=3, style=bold, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
+            } else if alt_edges.contains(&pair) {
+                write!(
+                    dot,
+                    "color=purple, penwidth=3, style=bold, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
+            } else if edge.is_reference {
+                write!(
+                    dot,
+                    "color=green, penwidth=1, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
+            } else {
+                write!(
+                    dot,
+                    "color=red, penwidth=2, style=dashed, label=\"{:.2}\"",
+                    edge.weight
+                )
+                .unwrap();
+            }
+
+            writeln!(dot, "];").unwrap();
+        }
+    }
+
+    writeln!(dot).unwrap();
+
+    // Legend subgraph.
+    writeln!(dot, "    subgraph cluster_legend {{").unwrap();
+    writeln!(dot, "        label=\"Legend\";").unwrap();
+    writeln!(dot, "        style=dashed;").unwrap();
+    writeln!(dot, "        fontname=\"Courier\";").unwrap();
+    writeln!(
+        dot,
+        "        ref_node [style=filled, fillcolor=\"#ADD8E6\", label=\"Reference\\nnode\"];"
+    )
+    .unwrap();
+    writeln!(
+        dot,
+        "        alt_node [style=filled, fillcolor=\"#FFFACD\", label=\"Alt\\nnode\"];"
+    )
+    .unwrap();
+    writeln!(
+        dot,
+        "        source_node [shape=doublecircle, width=0.3, style=filled, fillcolor=\"#90EE90\", label=\"S\"];"
+    )
+    .unwrap();
+    writeln!(
+        dot,
+        "        sink_node [shape=doublecircle, width=0.3, style=filled, fillcolor=\"#FF6347\", label=\"T\"];"
+    )
+    .unwrap();
+    writeln!(
+        dot,
+        "        ref_node -> alt_node [color=green, label=\"ref edge\"];"
+    )
+    .unwrap();
+    writeln!(
+        dot,
+        "        alt_node -> source_node [color=red, style=dashed, label=\"alt edge\"];"
+    )
+    .unwrap();
+    if highlight_paths.is_some() {
+        writeln!(
+            dot,
+            "        source_node -> sink_node [color=blue, penwidth=3, style=bold, label=\"ref path\"];"
+        )
+        .unwrap();
+        writeln!(
+            dot,
+            "        l_alt_start [style=invis, width=0, label=\"\"];"
+        )
+        .unwrap();
+        writeln!(
+            dot,
+            "        l_alt_end [style=invis, width=0, label=\"\"];"
+        )
+        .unwrap();
+        writeln!(
+            dot,
+            "        l_alt_start -> l_alt_end [color=purple, penwidth=3, style=bold, label=\"alt path\"];"
+        )
+        .unwrap();
+    }
+    writeln!(dot, "    }}").unwrap();
+
+    writeln!(dot, "}}").unwrap();
+
+    dot
+}
+
+/// Build the set of (from, to) edge pairs for either the reference path
+/// or the alternative paths.
+fn build_path_edge_set(
+    graph: &KmerGraph,
+    highlight_paths: Option<&[&KmerPath]>,
+    ref_path_idx: Option<usize>,
+    want_reference: bool,
+) -> HashSet<(usize, usize)> {
+    let mut edges = HashSet::new();
+
+    let paths = match highlight_paths {
+        Some(p) => p,
+        None => return edges,
+    };
+
+    let ref_idx = ref_path_idx.unwrap_or(0);
+
+    for (i, path) in paths.iter().enumerate() {
+        let is_ref_path = i == ref_idx;
+        if is_ref_path != want_reference {
+            continue;
+        }
+
+        let indices: Vec<Option<usize>> = path
+            .kmers
+            .iter()
+            .map(|kmer| graph.node_index.get(kmer).copied())
+            .collect();
+
+        if let Some(Some(first_idx)) = indices.first() {
+            edges.insert((graph.source, *first_idx));
+        }
+
+        for window in indices.windows(2) {
+            if let (Some(from), Some(to)) = (window[0], window[1]) {
+                edges.insert((from, to));
+            }
+        }
+
+        if let Some(Some(last_idx)) = indices.last() {
+            edges.insert((*last_idx, graph.sink));
+        }
+    }
+
+    edges
 }
 
 /// Build the set of (from, to) edge pairs that should be highlighted.
@@ -642,6 +910,10 @@ mod tests {
         assert!(dot.contains("color=green")); // Reference edges
         assert!(dot.contains("color=red")); // Alt edges
         assert!(dot.contains("style=dashed")); // Alt edge style
+
+        // Verify edge weight labels.
+        assert!(dot.contains("label=\"0.01\"")); // Reference edge weight
+        assert!(dot.contains("label=\"1.00\"")); // Alt edge weight
     }
 
     #[test]
@@ -881,5 +1153,148 @@ mod tests {
         // Should contain the truncated form, not the full 32-char k-mer.
         assert!(dot.contains("ACGTA...TACGT"));
         assert!(!dot.contains(long_kmer));
+    }
+
+    // ================================================================
+    // Tests for the convenience public API (to_dot, to_dot_with_paths,
+    // write_dot) and the legend variant.
+    // ================================================================
+
+    #[test]
+    fn test_to_dot_produces_valid_dot() {
+        let graph = make_test_graph();
+        let dot = to_dot(&graph);
+
+        // Must be a valid DOT digraph.
+        assert!(dot.contains("digraph"), "output must contain 'digraph'");
+        assert!(dot.contains("->"), "output must contain '->' (edges)");
+        assert!(dot.contains("n2"), "output must contain node labels");
+        assert!(dot.ends_with("}\n"));
+    }
+
+    #[test]
+    fn test_to_dot_reference_only_graph() {
+        // A graph with only reference nodes (no alt).
+        let nodes = vec![
+            GraphNode { kmer: "BigBang".to_string(), count: 0, is_reference: true },
+            GraphNode { kmer: "BigCrunch".to_string(), count: 0, is_reference: true },
+            GraphNode { kmer: "ACGT".to_string(), count: 100, is_reference: true },
+            GraphNode { kmer: "CGTA".to_string(), count: 90, is_reference: true },
+        ];
+
+        let mut edges = HashMap::new();
+        edges.insert(0, vec![Edge { to: 2, weight: 0.01, is_reference: true }]);
+        edges.insert(2, vec![Edge { to: 3, weight: 0.01, is_reference: true }]);
+        edges.insert(3, vec![Edge { to: 1, weight: 0.01, is_reference: true }]);
+
+        let mut node_index = HashMap::new();
+        for (i, n) in nodes.iter().enumerate() {
+            node_index.insert(n.kmer.clone(), i);
+        }
+
+        let graph = KmerGraph { nodes, edges, node_index, source: 0, sink: 1 };
+        let dot = to_dot(&graph);
+
+        assert!(dot.contains("digraph"));
+        assert!(dot.contains("->"));
+        // All real edges are reference, so green should appear.
+        assert!(dot.contains("color=green"));
+        // No alt edges expected.
+        assert!(!dot.contains("color=red"), "pure-reference graph should have no red edges");
+    }
+
+    #[test]
+    fn test_to_dot_with_snv_graph() {
+        // Graph with ref + alt path (SNV scenario from make_test_graph).
+        let graph = make_test_graph();
+        let dot = to_dot(&graph);
+
+        // Should have both reference and alt edges.
+        assert!(dot.contains("color=green"));
+        assert!(dot.contains("color=red"));
+
+        // Node labels should include k-mer and count.
+        assert!(dot.contains("ACGT"));
+        assert!(dot.contains("100")); // ACGT count
+        assert!(dot.contains("CGTT"));
+        assert!(dot.contains("50"));  // CGTT count
+    }
+
+    #[test]
+    fn test_to_dot_with_paths_highlights_correctly() {
+        let graph = make_test_graph();
+
+        let ref_path = KmerPath {
+            kmers: vec!["ACGT".to_string(), "CGTA".to_string()],
+            is_reference: true,
+        };
+        let alt_path = KmerPath {
+            kmers: vec!["ACGT".to_string(), "CGTT".to_string()],
+            is_reference: false,
+        };
+
+        let paths = vec![ref_path, alt_path];
+        let dot = to_dot_with_paths(&graph, &paths, 0);
+
+        // Reference path edges should be blue.
+        assert!(dot.contains("color=blue"), "ref path should be highlighted in blue");
+        // Alt path edges should be purple.
+        assert!(dot.contains("color=purple"), "alt path should be highlighted in purple");
+        // Legend should be present.
+        assert!(dot.contains("Legend"));
+        assert!(dot.contains("cluster_legend"));
+        assert!(dot.contains("ref path"));
+        assert!(dot.contains("alt path"));
+    }
+
+    #[test]
+    fn test_export_dot_with_legend_node_colors() {
+        let graph = make_test_graph();
+        let dot = export_dot_with_legend(&graph, "legend_test", None, None);
+
+        // Source should be styled as green doublecircle.
+        assert!(dot.contains("#90EE90"), "source node should be green");
+        // Sink should be styled as red doublecircle.
+        assert!(dot.contains("#FF6347"), "sink node should be tomato red");
+        // Reference k-mer nodes should be light blue.
+        assert!(dot.contains("#ADD8E6"), "ref nodes should be light blue");
+        // Alt k-mer nodes should be light yellow.
+        assert!(dot.contains("#FFFACD"), "alt nodes should be lemon chiffon");
+        // Legend subgraph must exist.
+        assert!(dot.contains("subgraph cluster_legend"));
+    }
+
+    #[test]
+    fn test_write_dot_convenience() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("convenience.dot");
+
+        let graph = make_test_graph();
+        write_dot(&graph, &path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("digraph"));
+        assert!(content.contains("->"));
+    }
+
+    #[test]
+    fn test_edge_weight_labels_present() {
+        let graph = make_test_graph();
+        let dot = export_dot(&graph, "weights", None);
+
+        // Every edge should carry a weight label.
+        // Reference edges have weight 0.01, alt edges 1.00.
+        assert!(dot.contains("label=\"0.01\""));
+        assert!(dot.contains("label=\"1.00\""));
+    }
+
+    #[test]
+    fn test_to_dot_with_paths_no_paths() {
+        // Calling to_dot_with_paths with an empty slice should not crash
+        // and should produce a valid DOT with the legend but no highlighted edges.
+        let graph = make_test_graph();
+        let dot = to_dot_with_paths(&graph, &[], 0);
+        assert!(dot.contains("digraph"));
+        assert!(dot.contains("Legend"));
     }
 }
