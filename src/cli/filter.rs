@@ -36,6 +36,24 @@ pub struct FilterArgs {
     /// Variant types to include [default: all]
     #[arg(long, num_args = 1..)]
     pub types: Vec<String>,
+
+    // ── Composite (adaptive) filter options ───────────────────────────
+
+    /// Minimum QUAL score (Phred-scaled) for composite filtering
+    #[arg(long)]
+    pub min_qual: Option<f64>,
+
+    /// Maximum p-value for composite filtering
+    #[arg(long)]
+    pub max_pvalue: Option<f64>,
+
+    /// Enable sequence-context annotations (homopolymer, GC, motif flags)
+    #[arg(long)]
+    pub context_filter: bool,
+
+    /// Homopolymer length to flag in context annotations [default: 6]
+    #[arg(long, default_value = "6")]
+    pub homopolymer_threshold: usize,
 }
 
 pub fn run(args: FilterArgs, global: &super::GlobalOptions) -> Result<()> {
@@ -55,9 +73,71 @@ pub fn run(args: FilterArgs, global: &super::GlobalOptions) -> Result<()> {
     };
 
     // 4. Run filtering
-    let results = crate::filter::filter_results(&calls, &expected, &config)?;
+    let mut results = crate::filter::filter_results(&calls, &expected, &config)?;
 
-    // 5. Write results as TSV
+    // 5. Apply composite (adaptive) filter if any adaptive options are set
+    let use_adaptive = args.min_qual.is_some()
+        || args.max_pvalue.is_some()
+        || args.context_filter;
+
+    if use_adaptive {
+        let adaptive_config = crate::filter::adaptive::AdaptiveFilterConfig {
+            min_coverage: args.min_coverage as u64,
+            min_vaf: args.min_vaf,
+            min_expression: args.min_expression,
+            allowed_types: args.types.clone(),
+            min_qual: args.min_qual,
+            max_pvalue: args.max_pvalue,
+            context_filter: args.context_filter,
+            homopolymer_threshold: args.homopolymer_threshold,
+            ..Default::default()
+        };
+
+        // For each "Found" result, run the adaptive filter on the matching call
+        for result in &mut results {
+            if result.found != "Found" {
+                continue;
+            }
+
+            // Find the matching call to run the adaptive stages on
+            let matched_call = calls.iter().find(|c| {
+                result.kmer_vaf == Some(c.rvaf)
+                    && result.kmer_min_coverage == Some(c.min_coverage)
+                    && result.ref_sequence.as_deref() == Some(&c.ref_sequence)
+            });
+
+            if let Some(call) = matched_call {
+                let stage_result =
+                    crate::filter::adaptive::apply_stages(call, &adaptive_config);
+
+                if !stage_result.passed {
+                    // Downgrade to "Not Found" and record why
+                    result.found = "Not Found".to_string();
+                    let reasons: Vec<String> = stage_result
+                        .stage_results
+                        .iter()
+                        .filter(|s| !s.passed)
+                        .filter_map(|s| s.reason.clone())
+                        .collect();
+                    result.filter_notes = reasons.join("; ");
+                }
+
+                // Append context flags to notes
+                if !stage_result.context_flags.is_empty() {
+                    let flag_str = stage_result.context_flags.join(",");
+                    if result.filter_notes == "PASS" {
+                        result.filter_notes =
+                            format!("PASS [context: {}]", flag_str);
+                    } else {
+                        result.filter_notes =
+                            format!("{} [context: {}]", result.filter_notes, flag_str);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Write results as TSV
     let mut output: Box<dyn Write> = match &global.output {
         Some(path) => Box::new(
             File::create(path)
