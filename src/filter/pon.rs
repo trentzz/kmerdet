@@ -364,6 +364,7 @@ mod tests {
             qual: None,
             ci_lower: None,
             ci_upper: None,
+            path_score: 0,
         }
     }
 

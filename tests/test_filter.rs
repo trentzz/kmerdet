@@ -25,6 +25,7 @@ fn make_call(
         rvaf: vaf,
         expression: expr,
         min_coverage: cov,
+        path_score: cov,
         start_kmer_count: 100,
         ref_sequence: "ACGTACGT".into(),
         alt_sequence: format!("ACGT{}ACGT", alt_a),

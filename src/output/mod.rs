@@ -81,6 +81,7 @@ pub fn parse_detection_tsv(path: &Path) -> Result<Vec<VariantCall>> {
             rvaf: record.get(4).unwrap_or("0").parse().unwrap_or(0.0),
             expression: record.get(5).unwrap_or("0").parse().unwrap_or(0.0),
             min_coverage: record.get(6).unwrap_or("0").parse().unwrap_or(0),
+            path_score: record.get(6).unwrap_or("0").parse().unwrap_or(0),
             start_kmer_count: record.get(7).unwrap_or("0").parse().unwrap_or(0),
             ref_sequence: record.get(8).unwrap_or("").to_string(),
             alt_sequence: record.get(9).unwrap_or("").to_string(),

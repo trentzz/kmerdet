@@ -26,6 +26,7 @@ fn make_call(variant_name: &str, start: usize, end: usize) -> VariantCall {
         rvaf: 0.5,
         expression: 100.0,
         min_coverage: 50,
+        path_score: 50,
         start_kmer_count: 100,
         ref_sequence: "ACGT".to_string(),
         alt_sequence: "TCGT".to_string(),
