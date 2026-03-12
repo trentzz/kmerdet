@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod dot;
 pub mod pathfind;
+pub mod pruning;
 
 use std::collections::HashMap;
 

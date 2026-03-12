@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
+use crate::graph::pruning::PruneConfig;
 use crate::jellyfish::KmerDatabase;
 use crate::sequence::path::KmerPath;
 use crate::sequence::target::{RefSeq, Target};
@@ -49,6 +50,22 @@ pub struct DetectArgs {
     /// Enable overlapping mutation clustering
     #[arg(long)]
     pub cluster: bool,
+
+    /// Disable graph pruning before pathfinding
+    #[arg(long)]
+    pub no_prune: bool,
+
+    /// Minimum node count for pruning (0 = adaptive)
+    #[arg(long, default_value = "0")]
+    pub prune_min_count: u64,
+
+    /// Error rate for adaptive pruning threshold
+    #[arg(long, default_value = "0.001")]
+    pub prune_error_rate: f64,
+
+    /// Bubble coverage ratio for pruning
+    #[arg(long, default_value = "0.10")]
+    pub prune_bubble_ratio: f64,
 }
 
 /// Open a jellyfish database (only available when compiled with jellyfish support).
@@ -90,12 +107,13 @@ fn sample_name(db_path: &std::path::Path) -> String {
         .to_string()
 }
 
-/// Process a single target: walk, build graph, find paths, classify, quantify.
+/// Process a single target: walk, build graph, prune, find paths, classify, quantify.
 fn process_target(
     target: &Target,
     db: &dyn KmerDatabase,
     k: u8,
     walker_config: &WalkerConfig,
+    prune_config: Option<&PruneConfig>,
     sample: &str,
 ) -> Result<Vec<VariantCall>> {
     // a. Decompose target into reference k-mers.
@@ -105,7 +123,15 @@ fn process_target(
     let walk_result = crate::walker::walk(db, &refseq.kmers, walker_config);
 
     // c. Build the directed weighted graph.
-    let graph = crate::graph::builder::build_graph(&walk_result, &refseq.kmers);
+    let mut graph = crate::graph::builder::build_graph(&walk_result, &refseq.kmers);
+
+    // c2. Prune the graph if enabled.
+    if let Some(prune_cfg) = prune_config {
+        let removed = crate::graph::pruning::prune_graph(&mut graph, prune_cfg, k);
+        if removed > 0 {
+            tracing::debug!("pruned {} nodes from graph for target '{}'", removed, target.name);
+        }
+    }
 
     // d. Find alternative paths through the graph.
     let paths = crate::graph::pathfind::find_alternative_paths(&graph);
@@ -261,6 +287,20 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         max_node: args.max_node,
     };
 
+    // 4b. Build prune configuration (unless --no-prune).
+    let prune_config = if args.no_prune {
+        None
+    } else {
+        Some(PruneConfig {
+            min_count: args.prune_min_count,
+            error_rate: args.prune_error_rate,
+            clip_tips: true,
+            max_tip_fraction: 0.5,
+            collapse_bubbles: true,
+            bubble_coverage_ratio: args.prune_bubble_ratio,
+        })
+    };
+
     // 5. Set up progress bar.
     let pb = ProgressBar::new(targets.len() as u64);
     pb.set_style(
@@ -276,7 +316,7 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
     let all_calls: Vec<VariantCall> = targets
         .par_iter()
         .flat_map(|target| {
-            let result = process_target(target, db.as_ref(), k, &walker_config, &db_name);
+            let result = process_target(target, db.as_ref(), k, &walker_config, prune_config.as_ref(), &db_name);
             pb.inc(1);
             match result {
                 Ok(calls) => calls,
