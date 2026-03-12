@@ -33,6 +33,8 @@ fn make_call(
         pos: Some(pos),
         ref_allele: Some(ref_a.into()),
         alt_allele: Some(alt_a.into()),
+        ci_lower: None,
+        ci_upper: None,
     }
 }
 

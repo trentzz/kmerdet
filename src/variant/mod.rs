@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod classifier;
 pub mod cluster;
 pub mod normalize;
@@ -82,4 +83,8 @@ pub struct VariantCall {
     pub ref_allele: Option<String>,
     /// Alternative allele.
     pub alt_allele: Option<String>,
+    /// Lower bound of bootstrap confidence interval on rVAF.
+    pub ci_lower: Option<f64>,
+    /// Upper bound of bootstrap confidence interval on rVAF.
+    pub ci_upper: Option<f64>,
 }

@@ -127,6 +127,8 @@ fn parse_detection_results(path: &Path) -> Result<Vec<VariantCall>> {
             alt_allele: record
                 .get(14)
                 .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) }),
+            ci_lower: None,
+            ci_upper: None,
         };
         calls.push(call);
     }

@@ -177,6 +177,8 @@ fn build_variant_call(
     quant: &Quantification,
     path_index: usize,
 ) -> VariantCall {
+    let ci_lower = quant.ci_lower.get(path_index).copied();
+    let ci_upper = quant.ci_upper.get(path_index).copied();
     VariantCall {
         sample: sample.to_string(),
         target: target_name.to_string(),
@@ -193,6 +195,8 @@ fn build_variant_call(
         pos: None,
         ref_allele: Some(classification.ref_allele.clone()),
         alt_allele: Some(classification.alt_allele.clone()),
+        ci_lower,
+        ci_upper,
     }
 }
 
@@ -228,6 +232,8 @@ fn make_reference_call(
         pos: None,
         ref_allele: None,
         alt_allele: None,
+        ci_lower: None,
+        ci_upper: None,
     }
 }
 
