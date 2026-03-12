@@ -34,6 +34,7 @@ pub fn run(cli: cli::Cli) -> Result<()> {
         cli::Command::Coverage(args) => cli::coverage::run(args, &cli.global),
         cli::Command::Run(args) => cli::run::run(args, &cli.global),
         cli::Command::Benchmark(args) => cli::benchmark::run(args, &cli.global),
+        cli::Command::Pon(args) => cli::pon::run(args, &cli.global),
     }
 }
 

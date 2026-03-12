@@ -8,6 +8,7 @@ pub mod detect;
 pub mod filter;
 pub mod merge;
 pub mod plot;
+pub mod pon;
 pub mod run;
 pub mod stats;
 
@@ -86,4 +87,6 @@ pub enum Command {
     Run(run::RunArgs),
     /// Compare detection results against ground truth
     Benchmark(benchmark::BenchmarkArgs),
+    /// Panel-of-normals: build from normals or filter against a PoN
+    Pon(pon::PonArgs),
 }
