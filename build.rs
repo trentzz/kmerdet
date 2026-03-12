@@ -1,3 +1,4 @@
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(has_jellyfish)");
+    // No build-time configuration needed.
+    // The jellyfish-reader crate (pure Rust) replaced the C++ FFI wrapper.
 }

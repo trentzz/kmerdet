@@ -92,7 +92,7 @@ src/
 ├── config.rs            # TOML config loading (DetectConfig, FilterConfig, etc.)
 ├── cli/                 # Clap derive subcommands (detect, filter, merge, stats, plot, coverage, run)
 ├── kmer/                # 2-bit packed Kmer struct, encoding, canonical form
-├── jellyfish/           # KmerDatabase trait + conditional FFI to libjellyfish
+├── jellyfish/           # KmerDatabase trait + pure Rust reader via jellyfish-reader crate
 ├── walker/              # Iterative DFS k-mer walking with extension thresholding
 ├── graph/               # Directed weighted k-mer graph, Dijkstra, all-shortest-paths
 ├── sequence/            # Target FASTA loading (needletail), RefSeq decomposition, KmerPath
@@ -104,7 +104,7 @@ src/
 ## Key Types
 
 - `Kmer` — 2-bit packed k-mer in u64, with canonical form and extension methods
-- `KmerDatabase` trait — Abstraction over jellyfish DB (FFI or mock)
+- `KmerDatabase` trait — Abstraction over jellyfish DB (pure Rust reader or mock)
 - `WalkResult` — Nodes (k-mer→count map) + reference k-mer set from DFS walking
 - `KmerGraph` — Directed weighted graph with BigBang/BigCrunch virtual nodes
 - `KmerPath` — Ordered k-mer sequence reconstructible to a DNA string
@@ -141,6 +141,6 @@ db.set("ACGTA", 5);                // Override specific k-mer count
 
 ## Build Notes
 
-- `build.rs` conditionally compiles jellyfish FFI — the project builds without jellyfish installed
-- `cfg(has_jellyfish)` gates FFI code — set by build.rs when pkg-config finds jellyfish
-- All tests pass without jellyfish via `MockDb`
+- `build.rs` is minimal — no build-time configuration needed
+- The `jellyfish-reader` crate (pure Rust) provides .jf database access
+- All tests pass via `MockDb` without any external dependencies

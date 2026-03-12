@@ -1,10 +1,8 @@
-pub mod ffi;
-pub mod header;
 pub mod reader;
 
 /// Trait abstracting k-mer database lookups.
 ///
-/// Enables both the real jellyfish FFI backend and a mock for testing.
+/// Enables both the pure Rust jellyfish-reader backend and a mock for testing.
 pub trait KmerDatabase: Send + Sync {
     /// Query the count of a k-mer (as a DNA string).
     fn query(&self, kmer: &str) -> u64;
