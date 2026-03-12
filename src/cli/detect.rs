@@ -328,6 +328,17 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
 
     pb.finish_with_message("done");
 
+    // 6b. Deduplicate INDEL calls that represent the same biological event.
+    let pre_dedup_count = all_calls.len();
+    let all_calls = crate::variant::normalize::deduplicate_calls(all_calls);
+    let dedup_removed = pre_dedup_count - all_calls.len();
+    if dedup_removed > 0 {
+        tracing::info!(
+            "deduplicated {} equivalent INDEL calls",
+            dedup_removed
+        );
+    }
+
     tracing::info!(
         "detected {} variant calls across {} targets",
         all_calls.len(),

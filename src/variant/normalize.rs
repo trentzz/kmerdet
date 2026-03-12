@@ -1,4 +1,4 @@
-/// INDEL normalization via left-alignment and prefix/suffix trimming.
+/// INDEL normalization, left-alignment, and deduplication.
 ///
 /// Implements the vt normalize / bcftools norm approach (based on Tan et al.
 /// 2015) for canonicalizing INDEL representations. Different tools can produce
@@ -6,6 +6,10 @@
 /// an insertion at different positions within a homopolymer run).
 /// Normalization ensures that equivalent INDELs are compared as equal during
 /// filtering.
+///
+/// Also provides deduplication: when the k-mer walker discovers the same
+/// INDEL at multiple positions in a repeat region, `deduplicate_calls()`
+/// collapses them to a single canonical variant.
 ///
 /// Algorithm (when reference context is available):
 /// 1. Left-align by repeatedly extending one base to the left and re-trimming
@@ -16,8 +20,11 @@
 ///
 /// Without reference context, only suffix/prefix trimming is performed.
 
+use std::collections::HashMap;
+use super::{VariantCall, VariantType};
+
 /// A normalized variant representation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NormalizedVariant {
     pub chrom: String,
     pub pos: u64,
@@ -54,11 +61,18 @@ pub fn normalize_indel(
 
     if let Some(ctx) = ref_context {
         // With reference context: left-align first, then trim.
-        // Left-aligning before trimming preserves repeat-unit structure
-        // needed for proper shifting through dinucleotide and longer repeats.
+        let ctx_bytes = ctx.as_bytes();
+
+        // If one allele is empty (pure ins/del without VCF anchor), add an
+        // anchor base from the context so left_align can shift properly.
+        if (ref_bytes.is_empty() || alt_bytes.is_empty()) && current_pos > 0 {
+            let anchor = ctx_bytes[(current_pos as usize) - 1];
+            ref_bytes.insert(0, anchor);
+            alt_bytes.insert(0, anchor);
+            current_pos -= 1;
+        }
 
         // Step 1: Left-align through the reference context.
-        let ctx_bytes = ctx.as_bytes();
         left_align(&mut current_pos, &mut ref_bytes, &mut alt_bytes, ctx_bytes);
 
         // Step 2: Trim common suffix and prefix after alignment.
@@ -185,6 +199,88 @@ fn left_align(pos: &mut u64, ref_bytes: &mut Vec<u8>, alt_bytes: &mut Vec<u8>, c
             break;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication
+// ---------------------------------------------------------------------------
+
+/// Deduplicate variant calls by collapsing INDELs with equivalent normalized
+/// representations. SNVs and other types pass through unchanged. Among
+/// duplicate INDELs, the call with the highest expression is kept.
+pub fn deduplicate_calls(calls: Vec<VariantCall>) -> Vec<VariantCall> {
+    let mut non_indels: Vec<VariantCall> = Vec::new();
+    let mut indel_map: HashMap<IndelDedupKey, VariantCall> = HashMap::new();
+    let mut indel_order: Vec<IndelDedupKey> = Vec::new();
+
+    for call in calls {
+        if is_indel_type(call.variant_type) {
+            let normalized = normalize_call(&call);
+            let key = IndelDedupKey {
+                sample: call.sample.clone(),
+                target: call.target.clone(),
+                normalized,
+            };
+            match indel_map.get(&key) {
+                Some(existing) if existing.expression >= call.expression => {
+                    // Existing has higher or equal expression; skip.
+                }
+                _ => {
+                    if !indel_map.contains_key(&key) {
+                        indel_order.push(key.clone());
+                    }
+                    indel_map.insert(key, call);
+                }
+            }
+        } else {
+            non_indels.push(call);
+        }
+    }
+
+    let mut result = non_indels;
+    for key in indel_order {
+        if let Some(call) = indel_map.remove(&key) {
+            result.push(call);
+        }
+    }
+    result
+}
+
+fn is_indel_type(vt: VariantType) -> bool {
+    matches!(vt, VariantType::Insertion | VariantType::Deletion | VariantType::Indel)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct IndelDedupKey {
+    sample: String,
+    target: String,
+    normalized: NormalizedVariant,
+}
+
+/// Normalize a variant call for deduplication using its ref_sequence as context.
+fn normalize_call(call: &VariantCall) -> NormalizedVariant {
+    let ref_allele = call.ref_allele.as_deref().unwrap_or("");
+    let alt_allele = call.alt_allele.as_deref().unwrap_or("");
+    let pos = parse_start_position(&call.variant_name).unwrap_or(0);
+    let ref_context = if call.ref_sequence.is_empty() {
+        None
+    } else {
+        Some(call.ref_sequence.as_str())
+    };
+
+    normalize_indel(
+        call.chrom.as_deref().unwrap_or(""),
+        pos as u64,
+        ref_allele,
+        alt_allele,
+        ref_context,
+    )
+}
+
+/// Parse the start position from a variant_name string (format: "start:ref/alt:end").
+fn parse_start_position(variant_name: &str) -> Option<usize> {
+    let first_part = variant_name.split(':').next()?;
+    first_part.parse().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -523,5 +619,78 @@ mod tests {
         assert_eq!(result.pos, 2);
         assert_eq!(result.ref_allele, "G");
         assert_eq!(result.alt_allele, "GA");
+    }
+
+    // -- Deduplication tests --
+
+    fn make_call(
+        sample: &str,
+        target: &str,
+        variant_type: VariantType,
+        variant_name: &str,
+        ref_allele: &str,
+        alt_allele: &str,
+        ref_sequence: &str,
+        expression: f64,
+    ) -> VariantCall {
+        VariantCall {
+            sample: sample.to_string(),
+            target: target.to_string(),
+            variant_type,
+            variant_name: variant_name.to_string(),
+            rvaf: 0.1,
+            expression,
+            min_coverage: 10,
+            start_kmer_count: 10,
+            ref_sequence: ref_sequence.to_string(),
+            alt_sequence: String::new(),
+            info: "vs_ref".to_string(),
+            chrom: None,
+            pos: None,
+            ref_allele: Some(ref_allele.to_string()),
+            alt_allele: Some(alt_allele.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_dedup_identical_indels_different_positions() {
+        let call1 = make_call("s", "t", VariantType::Deletion, "1:T/:1", "T", "", "TTTTT", 100.0);
+        let call2 = make_call("s", "t", VariantType::Deletion, "3:T/:3", "T", "", "TTTTT", 80.0);
+        let result = deduplicate_calls(vec![call1, call2]);
+        let dels: Vec<_> = result.iter().filter(|c| c.variant_type == VariantType::Deletion).collect();
+        assert_eq!(dels.len(), 1);
+        assert_eq!(dels[0].expression, 100.0);
+    }
+
+    #[test]
+    fn test_dedup_snvs_not_affected() {
+        let snv1 = make_call("s", "t", VariantType::Substitution, "5:A/T:5", "A", "T", "ACGT", 50.0);
+        let snv2 = make_call("s", "t", VariantType::Substitution, "5:A/T:5", "A", "T", "ACGT", 30.0);
+        let result = deduplicate_calls(vec![snv1, snv2]);
+        assert_eq!(result.iter().filter(|c| c.variant_type == VariantType::Substitution).count(), 2);
+    }
+
+    #[test]
+    fn test_dedup_keeps_highest_expression() {
+        let low = make_call("s", "t", VariantType::Deletion, "2:T/:2", "T", "", "TTTTT", 10.0);
+        let high = make_call("s", "t", VariantType::Deletion, "4:T/:4", "T", "", "TTTTT", 200.0);
+        let mid = make_call("s", "t", VariantType::Deletion, "1:T/:1", "T", "", "TTTTT", 50.0);
+        let result = deduplicate_calls(vec![low, high, mid]);
+        let dels: Vec<_> = result.iter().filter(|c| c.variant_type == VariantType::Deletion).collect();
+        assert_eq!(dels.len(), 1);
+        assert_eq!(dels[0].expression, 200.0);
+    }
+
+    #[test]
+    fn test_dedup_different_samples_not_collapsed() {
+        let call1 = make_call("A", "t", VariantType::Deletion, "1:T/:1", "T", "", "TTTTT", 100.0);
+        let call2 = make_call("B", "t", VariantType::Deletion, "3:T/:3", "T", "", "TTTTT", 80.0);
+        let result = deduplicate_calls(vec![call1, call2]);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_empty_input() {
+        assert!(deduplicate_calls(vec![]).is_empty());
     }
 }
