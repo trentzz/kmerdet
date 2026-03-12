@@ -844,6 +844,7 @@ mod tests {
             rvaf,
             expression: 1.0,
             min_coverage: 10,
+            path_score: 10,
             start_kmer_count: 20,
             ref_sequence: "ACGT".to_string(),
             alt_sequence: "TCGT".to_string(),

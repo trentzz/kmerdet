@@ -1,9 +1,15 @@
 // Graph construction and pathfinding tests.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 
+use common::MockDb;
 use kmerdet::graph::builder::{build_graph, ALT_EDGE_WEIGHT, REF_EDGE_WEIGHT};
-use kmerdet::graph::pathfind::find_alternative_paths;
+use kmerdet::graph::pathfind::{
+    find_alternative_paths, find_alternative_paths_ranked, path_mean_coverage, path_min_coverage,
+};
+use kmerdet::sequence::path::KmerPath;
 use kmerdet::walker::WalkResult;
 
 /// Helper: decompose a DNA string into k-mers of length k.
@@ -447,4 +453,338 @@ fn test_find_paths_deduplication() {
 
     // Specifically, there should be exactly 1 alternative path for the insertion
     assert_eq!(alt_paths.len(), 1, "Should have exactly 1 deduplicated alternative path");
+}
+
+// ============================================================
+// Coverage scoring tests
+// ============================================================
+
+#[test]
+fn test_path_min_coverage_simple() {
+    let mut db = MockDb::new(4);
+    db.set("ACGT", 100);
+    db.set("CGTA", 50);
+    db.set("GTAC", 200);
+
+    let path = KmerPath {
+        kmers: vec![
+            "ACGT".to_string(),
+            "CGTA".to_string(),
+            "GTAC".to_string(),
+        ],
+        is_reference: true,
+    };
+
+    assert_eq!(path_min_coverage(&path, &db), 50);
+}
+
+#[test]
+fn test_path_min_coverage_empty() {
+    let db = MockDb::new(4);
+    let path = KmerPath {
+        kmers: vec![],
+        is_reference: false,
+    };
+
+    assert_eq!(path_min_coverage(&path, &db), 0);
+}
+
+#[test]
+fn test_path_mean_coverage_simple() {
+    let mut db = MockDb::new(4);
+    db.set("ACGT", 100);
+    db.set("CGTA", 50);
+    db.set("GTAC", 150);
+
+    let path = KmerPath {
+        kmers: vec![
+            "ACGT".to_string(),
+            "CGTA".to_string(),
+            "GTAC".to_string(),
+        ],
+        is_reference: true,
+    };
+
+    let mean = path_mean_coverage(&path, &db);
+    // (100 + 50 + 150) / 3 = 100.0
+    assert!((mean - 100.0).abs() < 1e-9, "mean should be 100.0, got {}", mean);
+}
+
+#[test]
+fn test_path_mean_coverage_empty() {
+    let db = MockDb::new(4);
+    let path = KmerPath {
+        kmers: vec![],
+        is_reference: false,
+    };
+
+    assert!((path_mean_coverage(&path, &db) - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_path_min_coverage_single_kmer() {
+    let mut db = MockDb::new(4);
+    db.set("ACGT", 42);
+
+    let path = KmerPath {
+        kmers: vec!["ACGT".to_string()],
+        is_reference: true,
+    };
+
+    assert_eq!(path_min_coverage(&path, &db), 42);
+}
+
+#[test]
+fn test_path_mean_coverage_single_kmer() {
+    let mut db = MockDb::new(4);
+    db.set("ACGT", 42);
+
+    let path = KmerPath {
+        kmers: vec!["ACGT".to_string()],
+        is_reference: true,
+    };
+
+    let mean = path_mean_coverage(&path, &db);
+    assert!((mean - 42.0).abs() < 1e-9, "mean should be 42.0, got {}", mean);
+}
+
+#[test]
+fn test_find_alternative_paths_ranked_returns_coverage_order() {
+    // Create two alternative paths with different coverages.
+    // The higher-coverage alt should appear before the lower-coverage alt.
+    //
+    // Reference: ACGTACG (k=4) -> ACGT, CGTA, GTAC, TACG
+    //
+    // Alt path 1 (low coverage): ACGT -> CGTT -> GTTA -> TTAC -> TACG
+    //   variant k-mers: CGTT(10), GTTA(10), TTAC(10)
+    //
+    // Alt path 2 (high coverage): ACGT -> CGTG -> GTGA -> TGAC -> TACG
+    //   Wait, TGAC suffix = GAC, TACG prefix = TAC -- no match.
+    //
+    // Let's use a different approach. Two SNV alt paths that share the same
+    // ref start/end but differ at one position.
+    //
+    // Reference: ACGTACG (k=4) -> ACGT, CGTA, GTAC, TACG
+    //
+    // Alt path 1: ACGT -> CGTT -> GTTA -> TTAC -> TACG (counts: 10)
+    // Alt path 2: ACGT -> CGTC -> GTCA -> TCAC -> ... doesn't connect to TACG
+    //
+    // Simpler: use k=3 with two alt paths.
+    // Reference: ACGTTAG (k=3) -> ACG, CGT, GTT, TTA, TAG
+    //
+    // Alt path 1 (deletion, high cov): ACG -> CGT -> GTA -> TAG
+    //   variant k-mer: GTA(200)
+    //
+    // Alt path 2 (also a deletion via different route): If we add another
+    //   non-ref edge... This is tricky because we need two distinct alt paths.
+    //
+    // Let's use the simplest scenario: one alt path with known coverage.
+
+    let k = 3;
+    let ref_kmers = decompose("ACGTTAG", k);
+    // ref_kmers = ["ACG", "CGT", "GTT", "TTA", "TAG"]
+
+    // Deletion path: ACG -> CGT -> GTA -> TAG (count 35 for GTA)
+    let extra = vec![("GTA".to_string(), 35u64)];
+    let walk = make_walk(&ref_kmers, &extra);
+    let graph = build_graph(&walk, &ref_kmers);
+
+    let mut db = MockDb::new(3);
+    // Set reference k-mers
+    db.set("ACG", 100);
+    db.set("CGT", 100);
+    db.set("GTT", 100);
+    db.set("TTA", 100);
+    db.set("TAG", 100);
+    // Set variant k-mer
+    db.set("GTA", 35);
+
+    let ranked = find_alternative_paths_ranked(&graph, &db);
+
+    // Should have reference + 1 alt
+    assert!(ranked.len() >= 2, "Should have at least 2 ranked paths, got {}", ranked.len());
+
+    // Reference path at index 0
+    assert!(ranked[0].0.is_reference, "First ranked path should be reference");
+
+    // Reference path score = min(100, 100, 100, 100, 100) = 100
+    assert_eq!(ranked[0].1, 100, "Reference path score should be 100");
+
+    // Alt path score = min of its k-mer counts (ACG=100, CGT=100, GTA=35, TAG=100) = 35
+    assert_eq!(ranked[1].1, 35, "Alt path score should be 35");
+}
+
+#[test]
+fn test_find_alternative_paths_ranked_ref_stays_at_index_0() {
+    // Even when the reference path has a lower coverage score than alt paths,
+    // the reference path must remain at index 0.
+
+    let k = 3;
+    let ref_kmers = decompose("ACGTTAG", k);
+
+    let extra = vec![("GTA".to_string(), 500u64)]; // high-coverage variant k-mer
+    let walk = make_walk(&ref_kmers, &extra);
+    let graph = build_graph(&walk, &ref_kmers);
+
+    let mut db = MockDb::new(3);
+    // Set reference k-mers with LOW counts
+    db.set("ACG", 10);
+    db.set("CGT", 10);
+    db.set("GTT", 10);
+    db.set("TTA", 10);
+    db.set("TAG", 10);
+    // Set variant k-mer with HIGH count
+    db.set("GTA", 500);
+
+    let ranked = find_alternative_paths_ranked(&graph, &db);
+
+    assert!(ranked.len() >= 2, "Should have at least 2 ranked paths");
+
+    // Reference must be first, even though its score (10) < alt score (10 for shared k-mers)
+    assert!(ranked[0].0.is_reference, "Reference path must stay at index 0");
+}
+
+#[test]
+fn test_find_alternative_paths_ranked_multiple_alts_sorted() {
+    // Two alternative paths with different coverages should be sorted
+    // by descending coverage score.
+    //
+    // Reference: ACGTAG (k=3) -> ACG, CGT, GTA, TAG
+    // Alt 1 (insertion, low cov): ACG -> CGT -> GTT -> TTA -> TAG (seq: ACGTTAG)
+    //   variant k-mers: GTT(20), TTA(20)
+    // Alt 2 (some other path with high cov) -- need a second distinct alt path.
+    //
+    // To get two alt paths, we need two different non-ref edges that lead to
+    // complete paths through the graph.
+    //
+    // Reference: ACGTAG (k=3) -> ACG, CGT, GTA, TAG
+    //
+    // Alt 1: insertion of T -> ACGTTAG: ACG->CGT->GTT->TTA->TAG
+    //   new k-mers: GTT, TTA
+    //
+    // Alt 2: insertion of C -> ACGCTAG: ACG->CGC->GCT->CTA->TAG
+    //   new k-mers: CGC, GCT, CTA
+    //   ACG suffix=CG, CGC prefix=CG -> edge exists
+    //   CGC suffix=GC, GCT prefix=GC -> edge exists
+    //   GCT suffix=CT, CTA prefix=CT -> edge exists
+    //   CTA suffix=TA, TAG prefix=TA -> edge exists
+    //
+    // Set alt1 k-mers at low coverage, alt2 at high coverage.
+
+    let k = 3;
+    let ref_kmers = decompose("ACGTAG", k);
+    assert_eq!(ref_kmers, vec!["ACG", "CGT", "GTA", "TAG"]);
+
+    let extra = vec![
+        // Alt path 1 (insertion of T): low coverage
+        ("GTT".to_string(), 20u64),
+        ("TTA".to_string(), 20u64),
+        // Alt path 2 (insertion of C): high coverage
+        ("CGC".to_string(), 80u64),
+        ("GCT".to_string(), 80u64),
+        ("CTA".to_string(), 80u64),
+    ];
+    let walk = make_walk(&ref_kmers, &extra);
+    let graph = build_graph(&walk, &ref_kmers);
+
+    let mut db = MockDb::new(3);
+    db.set("ACG", 100);
+    db.set("CGT", 100);
+    db.set("GTA", 100);
+    db.set("TAG", 100);
+    // Alt 1 k-mers
+    db.set("GTT", 20);
+    db.set("TTA", 20);
+    // Alt 2 k-mers
+    db.set("CGC", 80);
+    db.set("GCT", 80);
+    db.set("CTA", 80);
+
+    let ranked = find_alternative_paths_ranked(&graph, &db);
+
+    assert!(ranked.len() >= 3, "Should find ref + 2 alt paths, got {}", ranked.len());
+
+    // Reference at index 0
+    assert!(ranked[0].0.is_reference, "First path should be reference");
+
+    // Alt paths should be sorted by descending score.
+    // Alt path 2 (through CGC/GCT/CTA) has min_cov = min(100, 80, 80, 80, 100) = 80
+    // Alt path 1 (through GTT/TTA) has min_cov = min(100, 100, 20, 20, 100) = 20
+    // So alt2 (score 80) should come before alt1 (score 20).
+
+    assert!(
+        ranked[1].1 >= ranked[2].1,
+        "Alt paths should be sorted by descending coverage: {} >= {}",
+        ranked[1].1,
+        ranked[2].1
+    );
+
+    // Verify specific scores
+    assert_eq!(ranked[1].1, 80, "Higher-coverage alt should have score 80");
+    assert_eq!(ranked[2].1, 20, "Lower-coverage alt should have score 20");
+}
+
+#[test]
+fn test_find_alternative_paths_ranked_equal_coverage_stable() {
+    // Two alternative paths with equal coverage should both appear.
+    // (We don't require a specific order when scores are equal, just that
+    // neither is lost and both scores are correct.)
+
+    let k = 3;
+    let ref_kmers = decompose("ACGTAG", k);
+
+    let extra = vec![
+        // Alt path 1: insertion of T
+        ("GTT".to_string(), 50u64),
+        ("TTA".to_string(), 50u64),
+        // Alt path 2: insertion of C
+        ("CGC".to_string(), 50u64),
+        ("GCT".to_string(), 50u64),
+        ("CTA".to_string(), 50u64),
+    ];
+    let walk = make_walk(&ref_kmers, &extra);
+    let graph = build_graph(&walk, &ref_kmers);
+
+    let mut db = MockDb::new(3);
+    db.set("ACG", 100);
+    db.set("CGT", 100);
+    db.set("GTA", 100);
+    db.set("TAG", 100);
+    db.set("GTT", 50);
+    db.set("TTA", 50);
+    db.set("CGC", 50);
+    db.set("GCT", 50);
+    db.set("CTA", 50);
+
+    let ranked = find_alternative_paths_ranked(&graph, &db);
+
+    assert!(ranked.len() >= 3, "Should find ref + 2 alt paths, got {}", ranked.len());
+
+    // Reference at index 0
+    assert!(ranked[0].0.is_reference);
+
+    // Both alt paths should have the same score (50 = min of shared + variant k-mers)
+    assert_eq!(ranked[1].1, ranked[2].1, "Equal-coverage paths should have equal scores");
+    assert_eq!(ranked[1].1, 50);
+}
+
+#[test]
+fn test_find_alternative_paths_ranked_reference_only() {
+    // When there are no alt paths, should return just the reference path scored.
+    let k = 4;
+    let ref_kmers = decompose("ACGTACG", k);
+    let walk = make_walk(&ref_kmers, &[]);
+    let graph = build_graph(&walk, &ref_kmers);
+
+    let mut db = MockDb::new(4);
+    db.set("ACGT", 100);
+    db.set("CGTA", 80);
+    db.set("GTAC", 120);
+    db.set("TACG", 90);
+
+    let ranked = find_alternative_paths_ranked(&graph, &db);
+
+    assert_eq!(ranked.len(), 1, "Should have exactly 1 path (reference only)");
+    assert!(ranked[0].0.is_reference);
+    assert_eq!(ranked[0].1, 80, "Reference path score should be min coverage = 80");
 }

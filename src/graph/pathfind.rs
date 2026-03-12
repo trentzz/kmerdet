@@ -3,11 +3,13 @@
 /// 1. Dijkstra from source and sink to find reachable nodes
 /// 2. Enumerate alternative paths through non-reference edges
 /// 3. Deduplicate by DNA sequence
+/// 4. Score and rank paths by coverage
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use super::KmerGraph;
+use crate::jellyfish::KmerDatabase;
 use crate::sequence::path::KmerPath;
 
 /// A state for Dijkstra's algorithm, ordered by distance (min-heap).
@@ -287,4 +289,68 @@ pub fn find_alternative_paths(graph: &KmerGraph) -> Vec<KmerPath> {
     let mut result = vec![ref_path];
     result.extend(alt_paths);
     result
+}
+
+/// Score a path by its minimum k-mer count (bottleneck coverage).
+///
+/// The minimum coverage represents the weakest link in the path — the k-mer
+/// with the lowest observed count. This is the most conservative estimate of
+/// how well-supported a path is, since the entire path is only as strong as
+/// its lowest-coverage k-mer.
+///
+/// Returns 0 for an empty path.
+pub fn path_min_coverage(path: &KmerPath, db: &dyn KmerDatabase) -> u64 {
+    path.kmers
+        .iter()
+        .map(|kmer| db.query(kmer))
+        .min()
+        .unwrap_or(0)
+}
+
+/// Score a path by its mean k-mer count.
+///
+/// The mean coverage gives an overall sense of how well-supported the path is,
+/// smoothing out local drops. Useful for comparing paths of different lengths
+/// where the minimum might be misleadingly low due to a single noisy position.
+///
+/// Returns 0.0 for an empty path.
+pub fn path_mean_coverage(path: &KmerPath, db: &dyn KmerDatabase) -> f64 {
+    if path.kmers.is_empty() {
+        return 0.0;
+    }
+    let total: u64 = path.kmers.iter().map(|kmer| db.query(kmer)).sum();
+    total as f64 / path.kmers.len() as f64
+}
+
+/// Find alternative paths and return them sorted by coverage score (highest first).
+///
+/// This is the hybrid approach: binary edge weights (ref=0.01, alt=1.0) are used
+/// for Dijkstra pathfinding (to find all shortest paths), then discovered paths
+/// are ranked by their minimum k-mer coverage. The reference path always stays
+/// at index 0; alternative paths (indices 1..) are sorted by descending coverage.
+///
+/// Each entry is a `(KmerPath, u64)` tuple where the `u64` is the path's
+/// minimum k-mer count (bottleneck coverage score).
+pub fn find_alternative_paths_ranked(
+    graph: &KmerGraph,
+    db: &dyn KmerDatabase,
+) -> Vec<(KmerPath, u64)> {
+    let paths = find_alternative_paths(graph);
+    let mut scored: Vec<(KmerPath, u64)> = paths
+        .into_iter()
+        .map(|p| {
+            let score = path_min_coverage(&p, db);
+            (p, score)
+        })
+        .collect();
+
+    // Sort alternative paths by coverage (highest first).
+    // The reference path stays at index 0.
+    if scored.len() > 1 {
+        let ref_path = scored.remove(0);
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.insert(0, ref_path);
+    }
+
+    scored
 }

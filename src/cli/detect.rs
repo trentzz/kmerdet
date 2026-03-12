@@ -107,13 +107,16 @@ fn process_target(
     // c. Build the directed weighted graph.
     let graph = crate::graph::builder::build_graph(&walk_result, &refseq.kmers);
 
-    // d. Find alternative paths through the graph.
-    let paths = crate::graph::pathfind::find_alternative_paths(&graph);
+    // d. Find alternative paths ranked by coverage (highest-coverage alt first).
+    let ranked_paths = crate::graph::pathfind::find_alternative_paths_ranked(&graph, db);
 
-    if paths.is_empty() {
+    if ranked_paths.is_empty() {
         // No paths at all (disconnected graph) -- produce a Reference call anyway.
         return Ok(vec![make_reference_call(sample, target, db, &refseq)]);
     }
+
+    // Extract paths (preserving coverage-ranked order) for quantification.
+    let paths: Vec<KmerPath> = ranked_paths.iter().map(|(p, _)| p.clone()).collect();
 
     // The first path is always the reference path.
     let ref_path = &paths[0];
@@ -123,10 +126,30 @@ fn process_target(
         return Ok(vec![make_reference_call(sample, target, db, &refseq)]);
     }
 
+    // Log coverage scores for debugging.
+    for (i, (_, score)) in ranked_paths.iter().enumerate() {
+        if i == 0 {
+            tracing::debug!(
+                target: "detect",
+                "ref path coverage score: {}",
+                score
+            );
+        } else {
+            tracing::debug!(
+                target: "detect",
+                "alt path {} coverage score: {}",
+                i,
+                score
+            );
+        }
+    }
+
     // e. Quantify all paths together via NNLS.
     let quant = crate::variant::quantifier::quantify(&paths, db);
 
     // f. Classify and build VariantCall for each alternative path.
+    //    Alternative paths are already sorted by coverage (highest first),
+    //    so the primary variant call (index 1) is the most confident.
     let mut calls: Vec<VariantCall> = Vec::new();
 
     // Include the reference call at index 0.
@@ -145,6 +168,7 @@ fn process_target(
         ref_path,
         &quant,
         0,
+        ranked_paths[0].1,
     ));
 
     // Process each alternative path (indices 1..).
@@ -160,6 +184,7 @@ fn process_target(
             alt_path,
             &quant,
             i,
+            ranked_paths[i].1,
         ));
     }
 
@@ -175,6 +200,7 @@ fn build_variant_call(
     alt_path: &KmerPath,
     quant: &Quantification,
     path_index: usize,
+    path_score: u64,
 ) -> VariantCall {
     VariantCall {
         sample: sample.to_string(),
@@ -188,6 +214,7 @@ fn build_variant_call(
         ref_sequence: ref_path.to_sequence(),
         alt_sequence: alt_path.to_sequence(),
         info: "vs_ref".to_string(),
+        path_score,
         chrom: None,
         pos: None,
         ref_allele: Some(classification.ref_allele.clone()),
@@ -219,6 +246,7 @@ fn make_reference_call(
         rvaf: 1.0,
         expression: mean_count,
         min_coverage: min_count,
+        path_score: min_count,
         start_kmer_count: counts.first().copied().unwrap_or(0),
         ref_sequence: target.sequence.clone(),
         alt_sequence: target.sequence.clone(),

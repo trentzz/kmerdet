@@ -65,6 +65,8 @@ pub struct VariantCall {
     pub expression: f64,
     /// Minimum k-mer count along the path.
     pub min_coverage: u64,
+    /// Coverage-based path score (min k-mer count used for ranking alternative paths).
+    pub path_score: u64,
     /// Count of the first k-mer in the path.
     pub start_kmer_count: u64,
     /// Reference path DNA sequence.

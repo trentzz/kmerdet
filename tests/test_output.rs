@@ -10,6 +10,7 @@ fn sample_call() -> VariantCall {
         rvaf: 0.25,
         expression: 150.0,
         min_coverage: 42,
+        path_score: 42,
         start_kmer_count: 200,
         ref_sequence: "ACGTACGT".to_string(),
         alt_sequence: "ACGTCTGACGT".to_string(),

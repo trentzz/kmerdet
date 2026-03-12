@@ -190,6 +190,7 @@ fn build_variant_call(
         rvaf: quant.rvafs[path_index],
         expression: quant.coefficients[path_index],
         min_coverage: quant.min_coverages[path_index],
+        path_score: quant.min_coverages[path_index],
         start_kmer_count: 0, // TODO: first k-mer count from path
         ref_sequence: ref_path.to_sequence(),
         alt_sequence: alt_path.to_sequence(),
@@ -225,6 +226,7 @@ fn make_reference_call(
         rvaf: 1.0,
         expression: mean_count,
         min_coverage: min_count,
+        path_score: min_count,
         start_kmer_count: counts.first().copied().unwrap_or(0),
         ref_sequence: target.sequence.clone(),
         alt_sequence: target.sequence.clone(),
