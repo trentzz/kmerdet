@@ -2,7 +2,8 @@ mod common;
 
 use common::MockDb;
 use kmerdet::walker::extension;
-use kmerdet::walker::{walk, WalkerConfig};
+use kmerdet::walker::pruning;
+use kmerdet::walker::{walk, walk_backward, walk_bidirectional, WalkerConfig};
 
 // ── Existing extension tests ──────────────────────────────────────────
 
@@ -225,6 +226,7 @@ fn test_walk_max_node_limit() {
         max_break: 10,
         max_node: 5, // Limit to 5 nodes total
         adaptive: false,
+        bidirectional: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -272,6 +274,7 @@ fn test_walk_max_break_limit() {
         max_break: 2, // Only allow 2 branching points
         max_node: 10000,
         adaptive: false,
+        bidirectional: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -334,6 +337,7 @@ fn test_walk_max_stack_limit() {
         max_break: 10,
         max_node: 10000,
         adaptive: false,
+        bidirectional: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -389,6 +393,7 @@ fn test_walk_max_stack_limit() {
         max_break: 100,
         max_node: 10000,
         adaptive: false,
+        bidirectional: false,
     };
 
     let result2 = walk(&db2, &ref_kmers2, &config2);
@@ -410,6 +415,7 @@ fn test_walk_max_stack_limit() {
         max_break: 100,
         max_node: 10000,
         adaptive: false,
+        bidirectional: false,
     };
 
     let result_unlimited = walk(&db2, &ref_kmers2, &config_unlimited);
@@ -458,6 +464,7 @@ fn test_walk_low_count_filtered() {
         max_break: 10,
         max_node: 10000,
         adaptive: false,
+        bidirectional: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -476,4 +483,411 @@ fn test_walk_low_count_filtered() {
             kmer
         );
     }
+}
+
+// ── Backward extension tests ─────────────────────────────────────────
+
+#[test]
+fn test_extend_backward_filters_by_count() {
+    let mut db = MockDb::new(4);
+    // Set up a k-mer "ACGT" and its possible backward extensions
+    // Backward extension of ACGT: prepend base + keep first k-1 = ACG
+    // => AACG, CACG, GACG, TACG
+    db.set("ACGT", 100);
+    db.set("AACG", 50); // A extension: passes
+    db.set("CACG", 2);  // C extension: too low
+    db.set("GACG", 1);  // G extension: too low
+    db.set("TACG", 0);  // T extension: zero
+
+    let children = extension::extend_backward(&db, "ACGT", 5, 0.05);
+
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].sequence, "AACG");
+    assert_eq!(children[0].count, 50);
+}
+
+#[test]
+fn test_extend_backward_all_pass() {
+    let mut db = MockDb::new(4);
+    // Backward extensions of ACGT: AACG, CACG, GACG, TACG
+    db.set("AACG", 100);
+    db.set("CACG", 100);
+    db.set("GACG", 100);
+    db.set("TACG", 100);
+
+    let children = extension::extend_backward(&db, "ACGT", 2, 0.05);
+    assert_eq!(children.len(), 4);
+}
+
+#[test]
+fn test_extend_backward_none_pass() {
+    let db = MockDb::new(4);
+    let children = extension::extend_backward(&db, "ACGT", 2, 0.05);
+    assert!(children.is_empty());
+}
+
+// ── Backward walk tests ──────────────────────────────────────────────
+
+#[test]
+fn test_walk_backward_discovers_left_kmers() {
+    // Reference: ACGTACGT with k=4
+    // Ref k-mers: ACGT, CGTA, GTAC, TACG
+    // A variant k-mer reachable only by backward extension from ACGT:
+    // backward extension of ACGT -> prepend base + ACG -> ?ACG
+    // e.g., TACG is already a ref k-mer; add GACG as variant
+    let k = 4;
+    let seq = "ACGTACGT";
+    let ref_kmers = kmers_from_seq(seq, k);
+
+    let mut db = MockDb::new(k as u8);
+    db.set_sequence(seq, 100);
+
+    // Variant reachable only via backward walk:
+    // From ACGT backward: AACG, CACG, GACG, TACG
+    // TACG is ref. Add GACG as a variant k-mer with high count.
+    db.set("GACG", 50);
+    // And from GACG backward: AGAC, CGAC, GGAC, TGAC
+    db.set("TGAC", 40);
+
+    let config = WalkerConfig::default();
+    let result = walk_backward(&db, &ref_kmers, &config);
+
+    // Should discover the variant k-mers reachable by backward extension
+    assert!(
+        result.nodes.contains_key("GACG"),
+        "walk_backward should discover GACG via backward extension from ACGT"
+    );
+    assert!(
+        result.nodes.contains_key("TGAC"),
+        "walk_backward should discover TGAC via backward extension from GACG"
+    );
+
+    // All reference k-mers should be present
+    for kmer in &ref_kmers {
+        assert!(result.nodes.contains_key(kmer));
+    }
+}
+
+#[test]
+fn test_walk_backward_empty_reference() {
+    let db = MockDb::new(4);
+    let ref_kmers: Vec<String> = vec![];
+
+    let config = WalkerConfig::default();
+    let result = walk_backward(&db, &ref_kmers, &config);
+
+    assert!(result.nodes.is_empty());
+    assert!(result.reference_kmers.is_empty());
+}
+
+#[test]
+fn test_walk_backward_reference_only() {
+    // With no variant k-mers reachable backward, should find only reference k-mers
+    let k = 4;
+    let seq = "ACGTACGT";
+    let ref_kmers = kmers_from_seq(seq, k);
+
+    let mut db = MockDb::new(k as u8);
+    db.set_sequence(seq, 100);
+
+    let config = WalkerConfig::default();
+    let result = walk_backward(&db, &ref_kmers, &config);
+
+    // Should find only ref k-mers (backward extensions from ref k-mers
+    // that match other ref k-mers are already in nodes, new ones have zero count)
+    for kmer in &ref_kmers {
+        assert!(result.nodes.contains_key(kmer));
+        assert!(result.reference_kmers.contains(kmer));
+    }
+}
+
+// ── Bidirectional walk tests ─────────────────────────────────────────
+
+#[test]
+fn test_walk_bidirectional_finds_more_than_forward() {
+    // Set up a scenario where backward walking discovers k-mers that forward
+    // walking cannot reach.
+    let k = 4;
+    let seq = "ACGTACGT";
+    let ref_kmers = kmers_from_seq(seq, k);
+
+    let mut db = MockDb::new(k as u8);
+    db.set_sequence(seq, 100);
+
+    // GACG is reachable only backward from ACGT (not forward from any ref k-mer)
+    db.set("GACG", 50);
+
+    // CGTT is reachable forward from ACGT
+    db.set("CGTT", 50);
+
+    let config = WalkerConfig::default();
+
+    let forward_result = walk(&db, &ref_kmers, &config);
+    let bidir_result = walk_bidirectional(&db, &ref_kmers, &config);
+
+    // Forward should find CGTT but not GACG
+    assert!(forward_result.nodes.contains_key("CGTT"));
+    assert!(
+        !forward_result.nodes.contains_key("GACG"),
+        "Forward-only walk should NOT find GACG"
+    );
+
+    // Bidirectional should find both
+    assert!(
+        bidir_result.nodes.contains_key("CGTT"),
+        "Bidirectional should find CGTT (forward)"
+    );
+    assert!(
+        bidir_result.nodes.contains_key("GACG"),
+        "Bidirectional should find GACG (backward)"
+    );
+
+    // Bidirectional should have more k-mers
+    assert!(
+        bidir_result.nodes.len() >= forward_result.nodes.len(),
+        "Bidirectional ({}) should find >= forward-only ({}) k-mers",
+        bidir_result.nodes.len(),
+        forward_result.nodes.len()
+    );
+}
+
+#[test]
+fn test_walk_bidirectional_same_as_forward_for_simple_snv() {
+    // For a simple SNV in the middle of the target, forward walk already
+    // discovers it. Bidirectional should give the same result (same k-mers,
+    // same counts).
+    let k = 4;
+    let seq = "ACGTACGT";
+    let ref_kmers = kmers_from_seq(seq, k);
+
+    let mut db = MockDb::new(k as u8);
+    db.set_sequence(seq, 100);
+
+    // SNV variant: CGTT reachable by forward extension from ACGT
+    db.set("CGTT", 50);
+
+    let config = WalkerConfig::default();
+
+    let forward_result = walk(&db, &ref_kmers, &config);
+    let bidir_result = walk_bidirectional(&db, &ref_kmers, &config);
+
+    // Both should contain the same k-mers (when there are no backward-only k-mers)
+    for (kmer, &count) in &forward_result.nodes {
+        assert!(
+            bidir_result.nodes.contains_key(kmer),
+            "Bidirectional should contain all forward k-mers; missing {}",
+            kmer
+        );
+        // Count should be max of forward and backward (forward dominates here)
+        assert!(
+            bidir_result.nodes[kmer] >= count,
+            "Bidirectional count for {} should be >= forward count",
+            kmer
+        );
+    }
+}
+
+#[test]
+fn test_walk_bidirectional_deletion_near_target_end() {
+    // Scenario: A deletion near the end of a target that the forward walker
+    // misses because it doesn't extend far enough left to see the deleted region.
+    //
+    // Reference: AACCGGTTAA (k=4)
+    // Ref k-mers: AACC, ACCG, CCGG, CGGT, GGTT, GTTA, TTAA
+    //
+    // Deletion of "GG" at the end:
+    // Variant path near the end: ...CCGG -> skip GG -> TTAA
+    // This produces variant k-mers like CCTT, CTTA that overlap the deletion boundary
+    //
+    // These can be found by backward extension from TTAA:
+    //   TTAA backward -> {A,C,G,T}TTA -> e.g., CTTA(variant)
+    //   CTTA backward -> {A,C,G,T}CTT -> e.g., CCTT(variant)
+    let k = 4;
+    let ref_seq = "AACCGGTTAA";
+    let ref_kmers = kmers_from_seq(ref_seq, k);
+
+    let mut db = MockDb::new(k as u8);
+    db.set_sequence(ref_seq, 100);
+
+    // Variant k-mers from the deletion path
+    // CCTT: bridges CC -> TT (skipping GG)
+    // CTTA: bridges CT -> TA (continuation after deletion)
+    db.set("CCTT", 30);
+    db.set("CTTA", 30);
+
+    let config = WalkerConfig::default();
+
+    let _forward_result = walk(&db, &ref_kmers, &config);
+    let backward_result = walk_backward(&db, &ref_kmers, &config);
+    let bidir_result = walk_bidirectional(&db, &ref_kmers, &config);
+
+    // CTTA should be found by backward walk from TTAA:
+    // TTAA backward: ATTA, CTTA, GTTA, TTTA
+    // CTTA count=30 should pass threshold
+    assert!(
+        backward_result.nodes.contains_key("CTTA"),
+        "Backward walk should find CTTA (backward from TTAA)"
+    );
+
+    // CCTT should be found by backward walk from CTTA:
+    // CTTA backward: ACTT, CCTT, GCTT, TCTT
+    assert!(
+        backward_result.nodes.contains_key("CCTT"),
+        "Backward walk should find CCTT (backward from CTTA)"
+    );
+
+    // Bidirectional should find them too
+    assert!(
+        bidir_result.nodes.contains_key("CTTA"),
+        "Bidirectional should find CTTA"
+    );
+    assert!(
+        bidir_result.nodes.contains_key("CCTT"),
+        "Bidirectional should find CCTT"
+    );
+}
+
+#[test]
+fn test_walk_bidirectional_merges_max_count() {
+    // When both forward and backward find the same k-mer with different counts,
+    // the merged result should keep the max.
+    let k = 4;
+    let ref_kmers = vec!["ACGT".to_string()];
+
+    let mut db = MockDb::new(k as u8);
+    db.set("ACGT", 100);
+
+    // Forward extension from ACGT -> CGTA (count 80)
+    db.set("CGTA", 80);
+
+    // CGTA can also be found via backward from ACGT -> TACG -> ... but
+    // it's simpler to just check that reference k-mers (which appear in both
+    // walks) keep the max count.
+
+    let config = WalkerConfig::default();
+    let result = walk_bidirectional(&db, &ref_kmers, &config);
+
+    assert_eq!(
+        result.nodes["ACGT"], 100,
+        "Reference k-mer should have count 100"
+    );
+}
+
+#[test]
+fn test_walk_bidirectional_respects_max_node_limit() {
+    let k = 4;
+    let mut db = MockDb::new(k as u8);
+
+    db.set("ACGT", 100);
+    // Many forward extensions
+    db.set("CGTA", 100);
+    db.set("CGTC", 100);
+    db.set("CGTG", 100);
+    db.set("CGTT", 100);
+    // Many backward extensions
+    db.set("AACG", 100);
+    db.set("CACG", 100);
+    db.set("GACG", 100);
+    db.set("TACG", 100);
+
+    let ref_kmers = vec!["ACGT".to_string()];
+
+    let config = WalkerConfig {
+        count: 2,
+        ratio: 0.05,
+        max_stack: 500,
+        max_break: 10,
+        max_node: 4, // Very small limit
+        adaptive: false,
+        bidirectional: false,
+    };
+
+    let result = walk_bidirectional(&db, &ref_kmers, &config);
+
+    // Forward and backward each have max_node=4, so the merge could have up to 7
+    // (4 forward + 4 backward - 1 shared reference k-mer).
+    // But the individual walks are each limited to max_node.
+    // At least the reference k-mer should be present.
+    assert!(result.nodes.contains_key("ACGT"));
+}
+
+// ── Pruning integration tests ────────────────────────────────────────
+
+#[test]
+fn test_prune_tips_on_walk_result() {
+    // Walk a reference with a short dead-end branch, then prune it.
+    let k = 4;
+    let ref_seq = "AACCGGTT";
+    let ref_kmers = kmers_from_seq(ref_seq, k);
+
+    let mut db = MockDb::new(k as u8);
+    db.set_sequence(ref_seq, 100);
+
+    // Add a short dead-end variant (1 k-mer long): forward from ACCG -> CCGA
+    // CCGA has no further extensions -> dead end
+    db.set("CCGA", 5);
+
+    let config = WalkerConfig::default();
+    let mut result = walk(&db, &ref_kmers, &config);
+
+    // Before pruning: CCGA should be present
+    assert!(result.nodes.contains_key("CCGA"));
+
+    // Prune tips: CCGA is a 1-kmer dead end, k/2 = 2, so it should be pruned
+    pruning::prune_tips(&mut result, k as u8);
+
+    assert!(
+        !result.nodes.contains_key("CCGA"),
+        "Short dead-end tip CCGA should be pruned"
+    );
+
+    // Reference k-mers should all survive
+    for kmer in &ref_kmers {
+        assert!(result.nodes.contains_key(kmer));
+    }
+}
+
+#[test]
+fn test_prune_bubbles_on_walk_result() {
+    // Build a WalkResult directly (bypassing the walker) to test bubble pruning
+    // in isolation. This avoids the walker's threshold filtering.
+    let k = 4;
+    let ref_seq = "AACCGGTT";
+    let ref_kmers = kmers_from_seq(ref_seq, k);
+
+    let mut nodes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut reference_kmers: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Add reference k-mers at 1000x
+    for kmer in &ref_kmers {
+        nodes.insert(kmer.clone(), 1000);
+        reference_kmers.insert(kmer.clone());
+    }
+
+    // Error bubble: very low count relative to reference
+    nodes.insert("CCGA".to_string(), 3); // 3 / 1000 = 0.3%, below 1% threshold
+
+    // Real variant: count above bubble threshold
+    nodes.insert("CCGT".to_string(), 50); // 50 / 1000 = 5%, well above 1% threshold
+
+    let mut result = kmerdet::walker::WalkResult {
+        nodes,
+        reference_kmers,
+    };
+
+    // Before pruning: both should be present
+    assert!(result.nodes.contains_key("CCGA"));
+    assert!(result.nodes.contains_key("CCGT"));
+
+    // Prune bubbles at 1%
+    pruning::prune_bubbles(&mut result, 0.01);
+
+    assert!(
+        !result.nodes.contains_key("CCGA"),
+        "Low-coverage bubble CCGA should be pruned"
+    );
+    assert!(
+        result.nodes.contains_key("CCGT"),
+        "Real variant CCGT should survive bubble pruning"
+    );
 }

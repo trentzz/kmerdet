@@ -57,6 +57,12 @@ pub struct DetectArgs {
     /// k-mer statistics.
     #[arg(long)]
     pub adaptive: bool,
+
+    /// Walk both forward and backward from reference k-mers.
+    /// Improves sensitivity for variants near target boundaries and
+    /// for deletions that span reference edges.
+    #[arg(long)]
+    pub bidirectional: bool,
 }
 
 /// Open a jellyfish database (only available when compiled with jellyfish support).
@@ -110,7 +116,11 @@ fn process_target(
     let refseq = RefSeq::from_target(target.clone(), k)?;
 
     // b. Walk the k-mer graph starting from reference k-mers.
-    let walk_result = crate::walker::walk(db, &refseq.kmers, walker_config);
+    let walk_result = if walker_config.bidirectional {
+        crate::walker::walk_bidirectional(db, &refseq.kmers, walker_config)
+    } else {
+        crate::walker::walk(db, &refseq.kmers, walker_config)
+    };
 
     // c. Build the directed weighted graph.
     let graph = crate::graph::builder::build_graph(&walk_result, &refseq.kmers);
@@ -313,7 +323,12 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         max_break: args.max_break,
         max_node: args.max_node,
         adaptive: args.adaptive,
+        bidirectional: args.bidirectional,
     };
+
+    if args.bidirectional {
+        tracing::info!("bidirectional walking enabled");
+    }
 
     // 5. Set up progress bar.
     let pb = ProgressBar::new(targets.len() as u64);
