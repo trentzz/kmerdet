@@ -625,6 +625,8 @@ mod tests {
             coefficients: vec![100.0, 25.0],
             rvafs: vec![0.8, 0.2],
             min_coverages: vec![90, 20],
+            ci_lower: vec![],
+            ci_upper: vec![],
         };
 
         let paths = vec![

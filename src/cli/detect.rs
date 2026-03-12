@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use crate::jellyfish::KmerDatabase;
 use crate::sequence::path::KmerPath;
 use crate::sequence::target::{RefSeq, Target};
+use crate::variant::bootstrap::BootstrapConfig;
 use crate::variant::classifier::Classification;
 use crate::variant::quantifier::Quantification;
 use crate::variant::{VariantCall, VariantType};
@@ -54,6 +55,23 @@ pub struct DetectArgs {
     /// The files can be visualised with Graphviz: `dot -Tpng file.dot -o file.png`
     #[arg(long, value_name = "DIR")]
     pub debug_graph: Option<PathBuf>,
+
+    /// Enable bootstrap confidence intervals on rVAF estimates.
+    /// Adds computation time but provides uncertainty measures.
+    #[arg(long)]
+    pub bootstrap: bool,
+
+    /// Number of bootstrap replicates (default 1000, only used with --bootstrap)
+    #[arg(long, default_value = "1000")]
+    pub bootstrap_replicates: usize,
+
+    /// Bootstrap confidence level (default 0.95 for 95% CI)
+    #[arg(long, default_value = "0.95")]
+    pub bootstrap_confidence: f64,
+
+    /// Bootstrap random seed for reproducibility
+    #[arg(long)]
+    pub bootstrap_seed: Option<u64>,
 }
 
 /// Open a jellyfish database using the pure Rust reader.
@@ -102,6 +120,7 @@ fn process_target(
     walker_config: &WalkerConfig,
     sample: &str,
     debug_graph_dir: Option<&std::path::Path>,
+    bootstrap_config: Option<&BootstrapConfig>,
 ) -> Result<Vec<VariantCall>> {
     // a. Decompose target into reference k-mers.
     let refseq = RefSeq::from_target(target.clone(), k)?;
@@ -157,7 +176,15 @@ fn process_target(
     }
 
     // e. Quantify all paths together via NNLS.
-    let quant = crate::variant::quantifier::quantify(&paths, db);
+    let mut quant = crate::variant::quantifier::quantify(&paths, db);
+
+    // e'. Optionally run bootstrap to compute confidence intervals.
+    if let Some(bs_config) = bootstrap_config {
+        let cis =
+            crate::variant::bootstrap::bootstrap_confidence_intervals(&paths, db, bs_config);
+        quant.ci_lower = cis.iter().map(|ci| ci.ci_lower).collect();
+        quant.ci_upper = cis.iter().map(|ci| ci.ci_upper).collect();
+    }
 
     // e'. Estimate per-target error rate from reference k-mers for confidence scoring.
     let error_rate = crate::confidence::pvalue::estimate_error_rate(db, &refseq.kmers);
@@ -226,6 +253,8 @@ fn build_variant_call(
     quant: &Quantification,
     path_index: usize,
 ) -> VariantCall {
+    let ci_lower = quant.ci_lower.get(path_index).copied();
+    let ci_upper = quant.ci_upper.get(path_index).copied();
     VariantCall {
         sample: sample.to_string(),
         target: target_name.to_string(),
@@ -244,6 +273,8 @@ fn build_variant_call(
         alt_allele: Some(classification.alt_allele.clone()),
         pvalue: None,
         qual: None,
+        ci_lower,
+        ci_upper,
     }
 }
 
@@ -281,6 +312,8 @@ fn make_reference_call(
         alt_allele: None,
         pvalue: None,
         qual: None,
+        ci_lower: None,
+        ci_upper: None,
     }
 }
 
@@ -333,13 +366,37 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         tracing::info!("writing debug graphs to: {}", dir.display());
     }
 
+    // 5c. Build bootstrap config if enabled.
+    let bootstrap_config = if args.bootstrap {
+        tracing::info!(
+            "bootstrap enabled: {} replicates, {:.0}% CI",
+            args.bootstrap_replicates,
+            args.bootstrap_confidence * 100.0,
+        );
+        Some(BootstrapConfig {
+            n_replicates: args.bootstrap_replicates,
+            confidence_level: args.bootstrap_confidence,
+            seed: args.bootstrap_seed,
+        })
+    } else {
+        None
+    };
+
     // 6. Process each target in parallel.
     let debug_dir = args.debug_graph.as_deref();
+    let bs_config_ref = bootstrap_config.as_ref();
     let all_calls: Vec<VariantCall> = targets
         .par_iter()
         .flat_map(|target| {
-            let result =
-                process_target(target, db.as_ref(), k, &walker_config, &db_name, debug_dir);
+            let result = process_target(
+                target,
+                db.as_ref(),
+                k,
+                &walker_config,
+                &db_name,
+                debug_dir,
+                bs_config_ref,
+            );
             pb.inc(1);
             match result {
                 Ok(calls) => calls,

@@ -57,6 +57,8 @@ pub const DETECT_HEADERS: &[&str] = &[
     "alt_allele",
     "pvalue",
     "qual",
+    "ci_lower",
+    "ci_upper",
 ];
 
 /// Parse detection results from a TSV file into VariantCall structs.
@@ -95,6 +97,8 @@ pub fn parse_detection_tsv(path: &Path) -> Result<Vec<VariantCall>> {
                 .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) }),
             pvalue: record.get(15).and_then(|s| s.parse().ok()),
             qual: record.get(16).and_then(|s| s.parse().ok()),
+            ci_lower: record.get(17).and_then(|s| s.parse().ok()),
+            ci_upper: record.get(18).and_then(|s| s.parse().ok()),
         };
         calls.push(call);
     }

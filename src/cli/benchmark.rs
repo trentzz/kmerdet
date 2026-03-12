@@ -129,6 +129,8 @@ fn parse_detection_results(path: &Path) -> Result<Vec<VariantCall>> {
                 .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) }),
             pvalue: record.get(15).and_then(|s| s.parse().ok()),
             qual: record.get(16).and_then(|s| s.parse().ok()),
+            ci_lower: record.get(17).and_then(|s| s.parse().ok()),
+            ci_upper: record.get(18).and_then(|s| s.parse().ok()),
         };
         calls.push(call);
     }

@@ -629,6 +629,8 @@ mod tests {
                 alt_allele: None,
                 pvalue: None,
                 qual: None,
+                ci_lower: None,
+                ci_upper: None,
             },
             VariantCall {
                 sample: "s1".to_string(),
@@ -648,6 +650,8 @@ mod tests {
                 alt_allele: Some("T".to_string()),
                 pvalue: None,
                 qual: None,
+                ci_lower: None,
+                ci_upper: None,
             },
             VariantCall {
                 sample: "s1".to_string(),
@@ -667,6 +671,8 @@ mod tests {
                 alt_allele: Some("AGGG".to_string()),
                 pvalue: None,
                 qual: None,
+                ci_lower: None,
+                ci_upper: None,
             },
             VariantCall {
                 sample: "s1".to_string(),
@@ -686,6 +692,8 @@ mod tests {
                 alt_allele: None,
                 pvalue: None,
                 qual: None,
+                ci_lower: None,
+                ci_upper: None,
             },
             VariantCall {
                 sample: "s1".to_string(),
@@ -705,6 +713,8 @@ mod tests {
                 alt_allele: Some("".to_string()),
                 pvalue: None,
                 qual: None,
+                ci_lower: None,
+                ci_upper: None,
             },
         ]
     }
@@ -774,6 +784,8 @@ mod tests {
             alt_allele: None,
             pvalue: None,
             qual: None,
+            ci_lower: None,
+            ci_upper: None,
         }];
         let result = generate_vaf_histogram(&calls);
         assert!(result.is_err());

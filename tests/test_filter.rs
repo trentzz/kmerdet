@@ -35,6 +35,8 @@ fn make_call(
         alt_allele: Some(alt_a.into()),
         pvalue: None,
         qual: None,
+        ci_lower: None,
+        ci_upper: None,
     }
 }
 

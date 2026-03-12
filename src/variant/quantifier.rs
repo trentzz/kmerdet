@@ -26,6 +26,10 @@ pub struct Quantification {
     pub rvafs: Vec<f64>,
     /// Minimum k-mer count along each path.
     pub min_coverages: Vec<u64>,
+    /// Lower bound of bootstrap CI per path (empty if bootstrap not run).
+    pub ci_lower: Vec<f64>,
+    /// Upper bound of bootstrap CI per path (empty if bootstrap not run).
+    pub ci_upper: Vec<f64>,
 }
 
 /// Quantify the expression levels of multiple paths through a k-mer region.
@@ -38,6 +42,8 @@ pub fn quantify(
             coefficients: vec![],
             rvafs: vec![],
             min_coverages: vec![],
+            ci_lower: vec![],
+            ci_upper: vec![],
         };
     }
 
@@ -57,6 +63,8 @@ pub fn quantify(
             coefficients: vec![0.0; n_paths],
             rvafs: vec![0.0; n_paths],
             min_coverages: vec![0; n_paths],
+            ci_lower: vec![],
+            ci_upper: vec![],
         };
     }
 
@@ -111,6 +119,8 @@ pub fn quantify(
         coefficients,
         rvafs,
         min_coverages,
+        ci_lower: vec![],
+        ci_upper: vec![],
     }
 }
 

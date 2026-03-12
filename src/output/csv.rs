@@ -30,6 +30,8 @@ pub fn write(calls: &[VariantCall], writer: &mut dyn Write, no_header: bool) -> 
             call.alt_allele.as_deref().unwrap_or(""),
             &call.pvalue.map(|p| format!("{:.6e}", p)).unwrap_or_default(),
             &call.qual.map(|q| format!("{:.2}", q)).unwrap_or_default(),
+            &call.ci_lower.map(|v| format!("{:.6}", v)).unwrap_or_default(),
+            &call.ci_upper.map(|v| format!("{:.6}", v)).unwrap_or_default(),
         ])?;
     }
 

@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod classifier;
 pub mod cluster;
 pub mod normalize;
@@ -86,4 +87,8 @@ pub struct VariantCall {
     pub pvalue: Option<f64>,
     /// Phred-scaled quality score: -10 * log10(pvalue), capped at 999.
     pub qual: Option<f64>,
+    /// Lower bound of bootstrap confidence interval on rVAF.
+    pub ci_lower: Option<f64>,
+    /// Upper bound of bootstrap confidence interval on rVAF.
+    pub ci_upper: Option<f64>,
 }

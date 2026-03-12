@@ -649,6 +649,10 @@ mod tests {
             pos: None,
             ref_allele: Some(ref_allele.to_string()),
             alt_allele: Some(alt_allele.to_string()),
+            pvalue: None,
+            qual: None,
+            ci_lower: None,
+            ci_upper: None,
         }
     }
 

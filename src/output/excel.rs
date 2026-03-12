@@ -43,6 +43,12 @@ pub fn write(calls: &[VariantCall], path: &Path) -> Result<()> {
         if let Some(q) = call.qual {
             worksheet.write_number(row, 16, q)?;
         }
+        if let Some(ci_lo) = call.ci_lower {
+            worksheet.write_number(row, 17, ci_lo)?;
+        }
+        if let Some(ci_hi) = call.ci_upper {
+            worksheet.write_number(row, 18, ci_hi)?;
+        }
     }
 
     workbook.save(path)?;

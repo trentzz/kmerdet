@@ -32,6 +32,14 @@ pub fn write(calls: &[VariantCall], writer: &mut dyn Write) -> Result<()> {
         writer,
         "##INFO=<ID=KPV,Number=1,Type=Float,Description=\"K-mer variant p-value\">"
     )?;
+    writeln!(
+        writer,
+        "##INFO=<ID=KCI_LO,Number=1,Type=Float,Description=\"Bootstrap CI lower bound on rVAF\">"
+    )?;
+    writeln!(
+        writer,
+        "##INFO=<ID=KCI_HI,Number=1,Type=Float,Description=\"Bootstrap CI upper bound on rVAF\">"
+    )?;
     writeln!(writer, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")?;
 
     for call in calls {
@@ -50,6 +58,12 @@ pub fn write(calls: &[VariantCall], writer: &mut dyn Write) -> Result<()> {
         );
         if let Some(pv) = call.pvalue {
             info.push_str(&format!(";KPV={:.6e}", pv));
+        }
+        if let Some(ci_lo) = call.ci_lower {
+            info.push_str(&format!(";KCI_LO={:.6}", ci_lo));
+        }
+        if let Some(ci_hi) = call.ci_upper {
+            info.push_str(&format!(";KCI_HI={:.6}", ci_hi));
         }
 
         writeln!(

@@ -20,6 +20,8 @@ fn sample_call() -> VariantCall {
         alt_allele: Some("TCTG".to_string()),
         pvalue: None,
         qual: None,
+        ci_lower: None,
+        ci_upper: None,
     }
 }
 

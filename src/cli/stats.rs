@@ -349,6 +349,8 @@ mod tests {
             alt_allele: Some("T".to_string()),
             pvalue: None,
             qual: None,
+            ci_lower: None,
+            ci_upper: None,
         }
     }
 
