@@ -10,6 +10,7 @@ use crate::sequence::target::{RefSeq, Target};
 use crate::variant::classifier::Classification;
 use crate::variant::quantifier::Quantification;
 use crate::variant::{VariantCall, VariantType};
+use crate::walker::adaptive::{AdaptiveConfig, estimate_thresholds};
 use crate::walker::WalkerConfig;
 
 #[derive(clap::Args, Debug)]
@@ -49,6 +50,13 @@ pub struct DetectArgs {
     /// Enable overlapping mutation clustering
     #[arg(long)]
     pub cluster: bool,
+
+    /// Use adaptive thresholds based on sample coverage and error rate.
+    /// When enabled, --count and --ratio are treated as manual overrides
+    /// only if explicitly set; otherwise they are computed from reference
+    /// k-mer statistics.
+    #[arg(long)]
+    pub adaptive: bool,
 }
 
 /// Open a jellyfish database (only available when compiled with jellyfish support).
@@ -253,12 +261,58 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
     }
 
     // 4. Build walker configuration from args.
+    let (count, ratio) = if args.adaptive {
+        // Collect reference k-mers from the first few targets for estimation.
+        let mut sample_ref_kmers: Vec<String> = Vec::new();
+        let max_targets_to_sample = 10.min(targets.len());
+        for target in &targets[..max_targets_to_sample] {
+            if let Ok(refseq) = RefSeq::from_target(target.clone(), k) {
+                sample_ref_kmers.extend(refseq.kmers);
+            }
+        }
+
+        let adaptive_config = AdaptiveConfig::default();
+        let thresholds = estimate_thresholds(db.as_ref(), &sample_ref_kmers, &adaptive_config);
+
+        tracing::info!(
+            "adaptive thresholds: tier={}, median_coverage={:.0}, error_rate={:.6}, count={}, ratio={:.4}",
+            thresholds.tier,
+            thresholds.median_coverage,
+            thresholds.error_rate,
+            thresholds.count_threshold,
+            thresholds.ratio_threshold,
+        );
+
+        // CLI --count / --ratio override adaptive values when explicitly provided.
+        // clap defaults: count=2, ratio=0.05. We detect "explicit" by checking if
+        // the user-supplied value differs from the clap default; if so, they intended
+        // an override.
+        let final_count = if args.count != 2 {
+            tracing::info!("--count {} overrides adaptive count {}", args.count, thresholds.count_threshold);
+            args.count
+        } else {
+            thresholds.count_threshold
+        };
+
+        let final_ratio = if (args.ratio - 0.05).abs() > f64::EPSILON {
+            tracing::info!("--ratio {} overrides adaptive ratio {}", args.ratio, thresholds.ratio_threshold);
+            args.ratio
+        } else {
+            thresholds.ratio_threshold
+        };
+
+        (final_count, final_ratio)
+    } else {
+        (args.count, args.ratio)
+    };
+
     let walker_config = WalkerConfig {
-        count: args.count,
-        ratio: args.ratio,
+        count,
+        ratio,
         max_stack: args.max_stack,
         max_break: args.max_break,
         max_node: args.max_node,
+        adaptive: args.adaptive,
     };
 
     // 5. Set up progress bar.

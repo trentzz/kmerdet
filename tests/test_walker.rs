@@ -224,6 +224,7 @@ fn test_walk_max_node_limit() {
         max_stack: 500,
         max_break: 10,
         max_node: 5, // Limit to 5 nodes total
+        adaptive: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -270,6 +271,7 @@ fn test_walk_max_break_limit() {
         max_stack: 500,
         max_break: 2, // Only allow 2 branching points
         max_node: 10000,
+        adaptive: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -331,6 +333,7 @@ fn test_walk_max_stack_limit() {
         max_stack: 3, // Very small stack limit
         max_break: 10,
         max_node: 10000,
+        adaptive: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
@@ -385,6 +388,7 @@ fn test_walk_max_stack_limit() {
         max_stack: 2, // Very small
         max_break: 100,
         max_node: 10000,
+        adaptive: false,
     };
 
     let result2 = walk(&db2, &ref_kmers2, &config2);
@@ -405,6 +409,7 @@ fn test_walk_max_stack_limit() {
         max_stack: 500,
         max_break: 100,
         max_node: 10000,
+        adaptive: false,
     };
 
     let result_unlimited = walk(&db2, &ref_kmers2, &config_unlimited);
@@ -452,6 +457,7 @@ fn test_walk_low_count_filtered() {
         max_stack: 500,
         max_break: 10,
         max_node: 10000,
+        adaptive: false,
     };
 
     let result = walk(&db, &ref_kmers, &config);
