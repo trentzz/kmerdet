@@ -1,3 +1,4 @@
+pub mod adaptive;
 pub mod extension;
 
 use std::collections::{HashMap, HashSet};
@@ -17,6 +18,8 @@ pub struct WalkerConfig {
     pub max_break: usize,
     /// Max total discovered nodes.
     pub max_node: usize,
+    /// Use adaptive thresholds based on sample coverage and error rate.
+    pub adaptive: bool,
 }
 
 impl Default for WalkerConfig {
@@ -27,6 +30,7 @@ impl Default for WalkerConfig {
             max_stack: 500,
             max_break: 10,
             max_node: 10000,
+            adaptive: false,
         }
     }
 }
