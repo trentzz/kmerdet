@@ -96,6 +96,14 @@ pub struct DetectArgs {
     /// Bubble coverage ratio for pruning
     #[arg(long, default_value = "0.10")]
     pub prune_bubble_ratio: f64,
+
+    /// Run detection at multiple k-mer lengths and merge with consensus voting.
+    ///
+    /// Specify comma-separated k values (e.g., `--multi-k 21,31,41`).
+    /// Shorter k values improve INDEL sensitivity; longer k values improve SNV
+    /// specificity. Results are merged using weighted consensus voting.
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    pub multi_k: Option<Vec<u8>>,
 }
 
 /// Open a jellyfish database using the pure Rust reader.
@@ -355,6 +363,16 @@ fn make_reference_call(
 }
 
 pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
+    // Check for multi-k mode first.
+    if let Some(k_values) = args.multi_k.clone() {
+        return run_multi_k(args, global, k_values);
+    }
+
+    run_single_k(args, global)
+}
+
+/// Run detection at a single k-mer length (the default mode).
+fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
     // 1. Open jellyfish database.
     let db = open_db(&args.db)?;
     let db_name = sample_name(&args.db);
@@ -364,8 +382,139 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
     tracing::info!("using k-mer length: {}", k);
 
     // 3. Load all target FASTA files.
+    let targets = load_all_targets(&args.targets)?;
+
+    // 4. Build walker configuration from args.
+    let walker_config = build_walker_config(&args, db.as_ref(), &targets, k)?;
+
+    if args.bidirectional {
+        tracing::info!("bidirectional walking enabled");
+    }
+
+    // 4b. Build prune configuration (unless --no-prune).
+    let prune_config = build_prune_config(&args);
+
+    // 5. Run detection pipeline.
+    let all_calls = run_detection_pipeline(
+        &args,
+        db.as_ref(),
+        &db_name,
+        k,
+        &targets,
+        &walker_config,
+        prune_config.as_ref(),
+    )?;
+
+    // 6. Write output.
+    write_output(&all_calls, global)?;
+
+    Ok(())
+}
+
+/// Run detection at multiple k-mer lengths and merge with consensus voting.
+fn run_multi_k(
+    args: DetectArgs,
+    global: &super::GlobalOptions,
+    k_values: Vec<u8>,
+) -> Result<()> {
+    anyhow::ensure!(
+        !k_values.is_empty(),
+        "--multi-k requires at least one k value"
+    );
+
+    // Validate k values.
+    for &k in &k_values {
+        anyhow::ensure!(k >= 5, "k-mer length {} is too small (minimum 5)", k);
+        anyhow::ensure!(k <= 127, "k-mer length {} exceeds maximum (127)", k);
+        anyhow::ensure!(k % 2 == 1, "k-mer length {} must be odd for canonical form", k);
+    }
+
+    let total_k_values = k_values.len();
+    tracing::info!(
+        "multi-k detection enabled: k={:?} ({} values)",
+        k_values,
+        total_k_values
+    );
+
+    // 1. Open jellyfish database.
+    let db = open_db(&args.db)?;
+    let db_name = sample_name(&args.db);
+
+    // 2. Load all target FASTA files (shared across all k values).
+    let targets = load_all_targets(&args.targets)?;
+
+    // 3. Build prune configuration (shared across all k values).
+    let prune_config = build_prune_config(&args);
+
+    // 4. Run detection for each k value independently.
+    let mut calls_per_k: Vec<(u8, Vec<VariantCall>)> = Vec::new();
+
+    for &k in &k_values {
+        tracing::info!("--- running detection at k={} ---", k);
+
+        // Build walker config for this k value.
+        let walker_config = build_walker_config(&args, db.as_ref(), &targets, k)?;
+
+        // Run detection at this k value.
+        let calls = run_detection_pipeline(
+            &args,
+            db.as_ref(),
+            &db_name,
+            k,
+            &targets,
+            &walker_config,
+            prune_config.as_ref(),
+        )?;
+
+        tracing::info!("k={}: detected {} calls", k, calls.len());
+        calls_per_k.push((k, calls));
+    }
+
+    // 5. Merge results with consensus voting.
+    let consensus_calls =
+        crate::variant::consensus::merge_multi_k(&calls_per_k, total_k_values);
+
+    tracing::info!(
+        "consensus merge: {} unique variants from {} total calls across {} k values",
+        consensus_calls.len(),
+        calls_per_k.iter().map(|(_, c)| c.len()).sum::<usize>(),
+        total_k_values,
+    );
+
+    // Log tier distribution.
+    let tier_counts = consensus_calls.iter().fold([0usize; 4], |mut acc, c| {
+        match c.tier {
+            crate::variant::consensus::ConfidenceTier::Tier1 => acc[0] += 1,
+            crate::variant::consensus::ConfidenceTier::Tier2 => acc[1] += 1,
+            crate::variant::consensus::ConfidenceTier::Tier3 => acc[2] += 1,
+            crate::variant::consensus::ConfidenceTier::Tier4 => acc[3] += 1,
+        }
+        acc
+    });
+    tracing::info!(
+        "tier distribution: Tier1={}, Tier2={}, Tier3={}, Tier4={}",
+        tier_counts[0],
+        tier_counts[1],
+        tier_counts[2],
+        tier_counts[3],
+    );
+
+    // 6. Convert consensus calls to VariantCalls for output.
+    let all_calls: Vec<VariantCall> = consensus_calls
+        .iter()
+        .map(crate::variant::consensus::consensus_to_variant_call)
+        .collect();
+
+    // 7. Write output.
+    write_output(&all_calls, global)?;
+
+    Ok(())
+}
+
+/// Load all target FASTA files from the specified paths.
+fn load_all_targets(paths: &[PathBuf]) -> Result<Vec<Target>> {
     let mut targets: Vec<Target> = Vec::new();
-    for path in &args.targets {
+    for path in paths {
         let loaded = crate::sequence::target::load_targets(path)
             .with_context(|| format!("loading targets from {}", path.display()))?;
         targets.extend(loaded);
@@ -376,9 +525,17 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         anyhow::bail!("no targets loaded; check --targets paths");
     }
 
-    // 4. Build walker configuration from args.
+    Ok(targets)
+}
+
+/// Build the WalkerConfig from CLI args, potentially using adaptive thresholds.
+fn build_walker_config(
+    args: &DetectArgs,
+    db: &dyn KmerDatabase,
+    targets: &[Target],
+    k: u8,
+) -> Result<WalkerConfig> {
     let (count, ratio) = if args.adaptive {
-        // Collect reference k-mers from the first few targets for estimation.
         let mut sample_ref_kmers: Vec<String> = Vec::new();
         let max_targets_to_sample = 10.min(targets.len());
         for target in &targets[..max_targets_to_sample] {
@@ -388,10 +545,11 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         }
 
         let adaptive_config = AdaptiveConfig::default();
-        let thresholds = estimate_thresholds(db.as_ref(), &sample_ref_kmers, &adaptive_config);
+        let thresholds = estimate_thresholds(db, &sample_ref_kmers, &adaptive_config);
 
         tracing::info!(
-            "adaptive thresholds: tier={}, median_coverage={:.0}, error_rate={:.6}, count={}, ratio={:.4}",
+            "adaptive thresholds (k={}): tier={}, median_coverage={:.0}, error_rate={:.6}, count={}, ratio={:.4}",
+            k,
             thresholds.tier,
             thresholds.median_coverage,
             thresholds.error_rate,
@@ -399,10 +557,6 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
             thresholds.ratio_threshold,
         );
 
-        // CLI --count / --ratio override adaptive values when explicitly provided.
-        // clap defaults: count=2, ratio=0.05. We detect "explicit" by checking if
-        // the user-supplied value differs from the clap default; if so, they intended
-        // an override.
         let final_count = if args.count != 2 {
             tracing::info!("--count {} overrides adaptive count {}", args.count, thresholds.count_threshold);
             args.count
@@ -422,7 +576,7 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         (args.count, args.ratio)
     };
 
-    let walker_config = WalkerConfig {
+    Ok(WalkerConfig {
         count,
         ratio,
         max_stack: args.max_stack,
@@ -430,14 +584,12 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         max_node: args.max_node,
         adaptive: args.adaptive,
         bidirectional: args.bidirectional,
-    };
+    })
+}
 
-    if args.bidirectional {
-        tracing::info!("bidirectional walking enabled");
-    }
-
-    // 4b. Build prune configuration (unless --no-prune).
-    let prune_config = if args.no_prune {
+/// Build the PruneConfig from CLI args.
+fn build_prune_config(args: &DetectArgs) -> Option<PruneConfig> {
+    if args.no_prune {
         None
     } else {
         Some(PruneConfig {
@@ -448,33 +600,41 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
             collapse_bubbles: true,
             bubble_coverage_ratio: args.prune_bubble_ratio,
         })
-    };
+    }
+}
 
-    // 5. Set up progress bar.
+/// Run the detection pipeline for a single k value: walk, graph, classify, quantify.
+fn run_detection_pipeline(
+    args: &DetectArgs,
+    db: &dyn KmerDatabase,
+    db_name: &str,
+    k: u8,
+    targets: &[Target],
+    walker_config: &WalkerConfig,
+    prune_config: Option<&PruneConfig>,
+) -> Result<Vec<VariantCall>> {
+    // Set up progress bar.
     let pb = ProgressBar::new(targets.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
             .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} targets ({eta})",
+                &format!(
+                    "{{spinner:.green}} [k={}] [{{elapsed_precise}}] [{{bar:40.cyan/blue}}] {{pos}}/{{len}} targets ({{eta}})",
+                    k
+                ),
             )
             .unwrap()
             .progress_chars("=>-"),
     );
 
-    // 5b. If --debug-graph is set, ensure the output directory exists.
+    // If --debug-graph is set, ensure the output directory exists.
     if let Some(ref dir) = args.debug_graph {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating debug-graph directory: {}", dir.display()))?;
-        tracing::info!("writing debug graphs to: {}", dir.display());
     }
 
-    // 5c. Build bootstrap config if enabled.
+    // Build bootstrap config if enabled.
     let bootstrap_config = if args.bootstrap {
-        tracing::info!(
-            "bootstrap enabled: {} replicates, {:.0}% CI",
-            args.bootstrap_replicates,
-            args.bootstrap_confidence * 100.0,
-        );
         Some(BootstrapConfig {
             n_replicates: args.bootstrap_replicates,
             confidence_level: args.bootstrap_confidence,
@@ -484,7 +644,7 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         None
     };
 
-    // 6. Process each target in parallel.
+    // Process each target in parallel.
     let debug_dir = args.debug_graph.as_deref();
     let bs_config_ref = bootstrap_config.as_ref();
     let all_calls: Vec<VariantCall> = targets
@@ -492,11 +652,11 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         .flat_map(|target| {
             let result = process_target(
                 target,
-                db.as_ref(),
+                db,
                 k,
-                &walker_config,
-                prune_config.as_ref(),
-                &db_name,
+                walker_config,
+                prune_config,
+                db_name,
                 debug_dir,
                 bs_config_ref,
             );
@@ -504,7 +664,7 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
             match result {
                 Ok(calls) => calls,
                 Err(e) => {
-                    tracing::warn!("target '{}' failed: {}", target.name, e);
+                    tracing::warn!("target '{}' failed at k={}: {}", target.name, k, e);
                     vec![]
                 }
             }
@@ -513,44 +673,49 @@ pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
 
     pb.finish_with_message("done");
 
-    // 6b. Deduplicate INDEL calls that represent the same biological event.
+    // Deduplicate INDEL calls.
     let pre_dedup_count = all_calls.len();
     let all_calls = crate::variant::normalize::deduplicate_calls(all_calls);
     let dedup_removed = pre_dedup_count - all_calls.len();
     if dedup_removed > 0 {
         tracing::info!(
-            "deduplicated {} equivalent INDEL calls",
-            dedup_removed
+            "k={}: deduplicated {} equivalent INDEL calls",
+            k,
+            dedup_removed,
         );
     }
 
     tracing::info!(
-        "detected {} variant calls across {} targets",
+        "k={}: detected {} variant calls across {} targets",
+        k,
         all_calls.len(),
-        targets.len()
+        targets.len(),
     );
 
-    // 7. Write output.
+    Ok(all_calls)
+}
+
+/// Write variant calls to the output destination.
+fn write_output(all_calls: &[VariantCall], global: &super::GlobalOptions) -> Result<()> {
     match &global.output {
         Some(path) => {
             if global.format == super::OutputFormat::Xlsx {
-                crate::output::write_calls_xlsx(&all_calls, path)?;
+                crate::output::write_calls_xlsx(all_calls, path)?;
                 return Ok(());
             }
             let mut file = std::fs::File::create(path)
                 .with_context(|| format!("creating output file: {}", path.display()))?;
-            crate::output::write_calls(&all_calls, &global.format, &mut file, global.no_header)?;
+            crate::output::write_calls(all_calls, &global.format, &mut file, global.no_header)?;
         }
         None => {
             let mut stdout = std::io::stdout().lock();
             crate::output::write_calls(
-                &all_calls,
+                all_calls,
                 &global.format,
                 &mut stdout,
                 global.no_header,
             )?;
         }
     }
-
     Ok(())
 }

@@ -1,6 +1,7 @@
 pub mod bootstrap;
 pub mod classifier;
 pub mod cluster;
+pub mod consensus;
 pub mod normalize;
 pub mod quantifier;
 
