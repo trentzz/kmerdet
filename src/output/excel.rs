@@ -37,6 +37,12 @@ pub fn write(calls: &[VariantCall], path: &Path) -> Result<()> {
         }
         worksheet.write_string(row, 13, call.ref_allele.as_deref().unwrap_or(""))?;
         worksheet.write_string(row, 14, call.alt_allele.as_deref().unwrap_or(""))?;
+        if let Some(pv) = call.pvalue {
+            worksheet.write_number(row, 15, pv)?;
+        }
+        if let Some(q) = call.qual {
+            worksheet.write_number(row, 16, q)?;
+        }
     }
 
     workbook.save(path)?;

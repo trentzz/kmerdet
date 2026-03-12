@@ -1,5 +1,6 @@
 pub mod benchmark;
 pub mod cli;
+pub mod confidence;
 pub mod config;
 pub mod filter;
 pub mod graph;

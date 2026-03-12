@@ -90,7 +90,11 @@ fn sample_name(db_path: &std::path::Path) -> String {
         .to_string()
 }
 
-/// Process a single target: walk, build graph, find paths, classify, quantify.
+/// Default assumed read length for autocorrelation correction in Fisher's method.
+const DEFAULT_READ_LENGTH: usize = 150;
+
+/// Process a single target: walk, build graph, find paths, classify, quantify,
+/// and compute statistical confidence.
 fn process_target(
     target: &Target,
     db: &dyn KmerDatabase,
@@ -155,6 +159,9 @@ fn process_target(
     // e. Quantify all paths together via NNLS.
     let quant = crate::variant::quantifier::quantify(&paths, db);
 
+    // e'. Estimate per-target error rate from reference k-mers for confidence scoring.
+    let error_rate = crate::confidence::pvalue::estimate_error_rate(db, &refseq.kmers);
+
     // f. Classify and build VariantCall for each alternative path.
     let mut calls: Vec<VariantCall> = Vec::new();
 
@@ -181,7 +188,17 @@ fn process_target(
         let classification =
             crate::variant::classifier::classify(ref_path, alt_path, k);
 
-        calls.push(build_variant_call(
+        // Compute statistical confidence for this variant.
+        let pvalue = crate::confidence::compute_variant_pvalue(
+            db,
+            alt_path,
+            ref_path,
+            error_rate,
+            DEFAULT_READ_LENGTH,
+        );
+        let qual = crate::confidence::phred_qual(pvalue);
+
+        let mut call = build_variant_call(
             sample,
             &target.name,
             &classification,
@@ -189,7 +206,11 @@ fn process_target(
             alt_path,
             &quant,
             i,
-        ));
+        );
+        call.pvalue = Some(pvalue);
+        call.qual = Some(qual);
+
+        calls.push(call);
     }
 
     Ok(calls)
@@ -221,6 +242,8 @@ fn build_variant_call(
         pos: None,
         ref_allele: Some(classification.ref_allele.clone()),
         alt_allele: Some(classification.alt_allele.clone()),
+        pvalue: None,
+        qual: None,
     }
 }
 
@@ -256,6 +279,8 @@ fn make_reference_call(
         pos: None,
         ref_allele: None,
         alt_allele: None,
+        pvalue: None,
+        qual: None,
     }
 }
 

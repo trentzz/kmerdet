@@ -347,6 +347,8 @@ mod tests {
             pos: Some(100),
             ref_allele: Some("A".to_string()),
             alt_allele: Some("T".to_string()),
+            pvalue: None,
+            qual: None,
         }
     }
 
