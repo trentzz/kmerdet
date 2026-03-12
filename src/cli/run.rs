@@ -193,6 +193,8 @@ fn build_variant_call(
         pos: None,
         ref_allele: Some(classification.ref_allele.clone()),
         alt_allele: Some(classification.alt_allele.clone()),
+        pvalue: None,
+        qual: None,
     }
 }
 
@@ -228,6 +230,8 @@ fn make_reference_call(
         pos: None,
         ref_allele: None,
         alt_allele: None,
+        pvalue: None,
+        qual: None,
     }
 }
 

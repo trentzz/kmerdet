@@ -82,4 +82,8 @@ pub struct VariantCall {
     pub ref_allele: Option<String>,
     /// Alternative allele.
     pub alt_allele: Option<String>,
+    /// Statistical p-value for the variant call (binomial + Fisher's method).
+    pub pvalue: Option<f64>,
+    /// Phred-scaled quality score: -10 * log10(pvalue), capped at 999.
+    pub qual: Option<f64>,
 }

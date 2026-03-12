@@ -18,6 +18,8 @@ fn sample_call() -> VariantCall {
         pos: Some(170837543),
         ref_allele: Some("T".to_string()),
         alt_allele: Some("TCTG".to_string()),
+        pvalue: None,
+        qual: None,
     }
 }
 

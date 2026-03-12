@@ -34,6 +34,8 @@ fn make_call(variant_name: &str, start: usize, end: usize) -> VariantCall {
         pos: None,
         ref_allele: Some("A".to_string()),
         alt_allele: Some("T".to_string()),
+        pvalue: None,
+        qual: None,
     }
 }
 
