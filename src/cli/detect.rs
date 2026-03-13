@@ -8,8 +8,10 @@ use crate::graph::pruning::PruneConfig;
 use crate::jellyfish::KmerDatabase;
 use crate::sequence::path::KmerPath;
 use crate::sequence::target::{RefSeq, Target};
+use crate::trace::{self, DetectionTrace};
 use crate::variant::bootstrap::BootstrapConfig;
 use crate::variant::classifier::Classification;
+use crate::variant::cluster;
 use crate::variant::quantifier::Quantification;
 use crate::variant::{VariantCall, VariantType};
 use crate::walker::adaptive::{AdaptiveConfig, estimate_thresholds};
@@ -52,6 +54,10 @@ pub struct DetectArgs {
     /// Enable overlapping mutation clustering
     #[arg(long)]
     pub cluster: bool,
+
+    /// Write per-target detection traces to DIR as JSON files
+    #[arg(long, value_name = "DIR")]
+    pub trace: Option<PathBuf>,
 
     /// Write a .dot graph file per target into this directory for debugging.
     #[arg(long, value_name = "DIR")]
@@ -145,6 +151,9 @@ const DEFAULT_READ_LENGTH: usize = 150;
 
 /// Process a single target: walk, build graph, prune, find paths, classify, quantify,
 /// and compute statistical confidence.
+///
+/// When `trace_enabled` is true, also builds and returns a `DetectionTrace` capturing
+/// the intermediate results for debugging/audit purposes.
 fn process_target(
     target: &Target,
     db: &dyn KmerDatabase,
@@ -154,7 +163,8 @@ fn process_target(
     sample: &str,
     debug_graph_dir: Option<&std::path::Path>,
     bootstrap_config: Option<&BootstrapConfig>,
-) -> Result<Vec<VariantCall>> {
+    trace_enabled: bool,
+) -> Result<(Vec<VariantCall>, Option<DetectionTrace>)> {
     // a. Decompose target into reference k-mers.
     let refseq = RefSeq::from_target(target.clone(), k)?;
 
@@ -163,6 +173,13 @@ fn process_target(
         crate::walker::walk_bidirectional(db, &refseq.kmers, walker_config)
     } else {
         crate::walker::walk(db, &refseq.kmers, walker_config)
+    };
+
+    // Build walking trace if tracing is enabled.
+    let walking_trace = if trace_enabled {
+        Some(trace::build_walking_trace(&walk_result, &refseq.kmers, db, walker_config))
+    } else {
+        None
     };
 
     // c. Build the directed weighted graph.
@@ -175,6 +192,13 @@ fn process_target(
             tracing::debug!("pruned {} nodes from graph for target '{}'", removed, target.name);
         }
     }
+
+    // Build graph trace if tracing is enabled.
+    let graph_trace = if trace_enabled {
+        Some(trace::build_graph_trace(&graph))
+    } else {
+        None
+    };
 
     // d. Find alternative paths ranked by coverage (highest-coverage alt first).
     let ranked_paths = crate::graph::pathfind::find_alternative_paths_ranked(&graph, db);
@@ -210,7 +234,23 @@ fn process_target(
 
     if ranked_paths.is_empty() {
         // No paths at all (disconnected graph) -- produce a Reference call anyway.
-        return Ok(vec![make_reference_call(sample, target, db, &refseq)]);
+        let calls = vec![make_reference_call(sample, target, db, &refseq)];
+
+        let dt = if trace_enabled {
+            Some(DetectionTrace {
+                target: target.name.clone(),
+                walking: walking_trace.unwrap(),
+                graph: graph_trace.unwrap(),
+                pathfinding: trace::build_pathfinding_trace(&[]),
+                classifications: vec![],
+                quantification: None,
+                outcome: "no_paths".to_string(),
+            })
+        } else {
+            None
+        };
+
+        return Ok((calls, dt));
     }
 
     // Extract paths (preserving coverage-ranked order) for quantification.
@@ -221,7 +261,23 @@ fn process_target(
 
     if paths.len() == 1 {
         // Only reference path: no variants detected.
-        return Ok(vec![make_reference_call(sample, target, db, &refseq)]);
+        let calls = vec![make_reference_call(sample, target, db, &refseq)];
+
+        let dt = if trace_enabled {
+            Some(DetectionTrace {
+                target: target.name.clone(),
+                walking: walking_trace.unwrap(),
+                graph: graph_trace.unwrap(),
+                pathfinding: trace::build_pathfinding_trace(&paths),
+                classifications: vec![],
+                quantification: None,
+                outcome: "reference_only".to_string(),
+            })
+        } else {
+            None
+        };
+
+        return Ok((calls, dt));
     }
 
     // Log coverage scores for debugging.
@@ -260,6 +316,7 @@ fn process_target(
     //    Alternative paths are already sorted by coverage (highest first),
     //    so the primary variant call (index 1) is the most confident.
     let mut calls: Vec<VariantCall> = Vec::new();
+    let mut classification_traces: Vec<trace::ClassificationTrace> = Vec::new();
 
     // Include the reference call at index 0.
     calls.push(build_variant_call(
@@ -284,6 +341,11 @@ fn process_target(
     for (i, alt_path) in paths.iter().enumerate().skip(1) {
         let classification =
             crate::variant::classifier::classify(ref_path, alt_path, k);
+
+        // Build classification trace if tracing is enabled.
+        if trace_enabled {
+            classification_traces.push(trace::build_classification_trace(&classification, i));
+        }
 
         // Compute statistical confidence for this variant.
         let pvalue = crate::confidence::compute_variant_pvalue(
@@ -311,7 +373,23 @@ fn process_target(
         calls.push(call);
     }
 
-    Ok(calls)
+    // Build the full detection trace if enabled.
+    let dt = if trace_enabled {
+        let quant_trace = trace::build_quantification_trace(&quant, &paths);
+        Some(DetectionTrace {
+            target: target.name.clone(),
+            walking: walking_trace.unwrap(),
+            graph: graph_trace.unwrap(),
+            pathfinding: trace::build_pathfinding_trace(&paths),
+            classifications: classification_traces,
+            quantification: Some(quant_trace),
+            outcome: "variant_detected".to_string(),
+        })
+    } else {
+        None
+    };
+
+    Ok((calls, dt))
 }
 
 /// Build a VariantCall from classification and quantification results.
@@ -662,6 +740,13 @@ fn run_detection_pipeline(
             .with_context(|| format!("creating debug-graph directory: {}", dir.display()))?;
     }
 
+    // If --trace is set, ensure the output directory exists.
+    let trace_enabled = args.trace.is_some();
+    if let Some(ref dir) = args.trace {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating trace directory: {}", dir.display()))?;
+    }
+
     // Build bootstrap config if enabled.
     let bootstrap_config = if args.bootstrap {
         Some(BootstrapConfig {
@@ -673,12 +758,12 @@ fn run_detection_pipeline(
         None
     };
 
-    // Process each target in parallel.
+    // Process each target in parallel, collecting both calls and optional traces.
     let debug_dir = args.debug_graph.as_deref();
     let bs_config_ref = bootstrap_config.as_ref();
-    let all_calls: Vec<VariantCall> = targets
+    let results: Vec<(Vec<VariantCall>, Option<DetectionTrace>)> = targets
         .par_iter()
-        .flat_map(|target| {
+        .filter_map(|target| {
             let result = process_target(
                 target,
                 db,
@@ -688,19 +773,101 @@ fn run_detection_pipeline(
                 db_name,
                 debug_dir,
                 bs_config_ref,
+                trace_enabled,
             );
             pb.inc(1);
             match result {
-                Ok(calls) => calls,
+                Ok(pair) => Some(pair),
                 Err(e) => {
                     tracing::warn!("target '{}' failed at k={}: {}", target.name, k, e);
-                    vec![]
+                    None
                 }
             }
         })
         .collect();
 
     pb.finish_with_message("done");
+
+    // Separate calls and traces.
+    let mut all_calls: Vec<VariantCall> = Vec::new();
+    let mut all_traces: Vec<DetectionTrace> = Vec::new();
+
+    for (calls, dt) in results {
+        all_calls.extend(calls);
+        if let Some(t) = dt {
+            all_traces.push(t);
+        }
+    }
+
+    // Write per-target traces and summary if --trace is enabled.
+    if let Some(ref trace_dir) = args.trace {
+        for dt in &all_traces {
+            if let Err(e) = trace::write_trace_target(dt, trace_dir) {
+                tracing::warn!("failed to write trace for target '{}': {}", dt.target, e);
+            }
+        }
+        if let Err(e) = trace::write_trace_summary(&all_traces, trace_dir) {
+            tracing::warn!("failed to write trace summary: {}", e);
+        } else {
+            tracing::info!(
+                "wrote detection traces for {} targets to {}",
+                all_traces.len(),
+                trace_dir.display(),
+            );
+        }
+    }
+
+    // Apply overlapping mutation clustering if --cluster is enabled.
+    if args.cluster {
+        let clusters = cluster::cluster_variants(&all_calls);
+        let multi_clusters: Vec<&cluster::VariantCluster> =
+            clusters.iter().filter(|c| c.calls.len() > 1).collect();
+
+        if !multi_clusters.is_empty() {
+            tracing::info!(
+                "found {} overlapping mutation cluster(s):",
+                multi_clusters.len(),
+            );
+            for (i, c) in multi_clusters.iter().enumerate() {
+                tracing::info!(
+                    "  cluster {}: {} calls spanning positions [{}, {}]",
+                    i + 1,
+                    c.calls.len(),
+                    c.start,
+                    c.end,
+                );
+                for call in &c.calls {
+                    tracing::info!(
+                        "    - {} {} (rVAF={:.4})",
+                        call.variant_type,
+                        call.variant_name,
+                        call.rvaf,
+                    );
+                }
+            }
+
+            // Annotate clustered calls: update the info field to record cluster membership.
+            // Build a lookup: variant_name -> cluster index for calls that belong to a
+            // multi-variant cluster.
+            let mut cluster_membership: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (i, c) in multi_clusters.iter().enumerate() {
+                for call in &c.calls {
+                    cluster_membership.insert(call.variant_name.clone(), i + 1);
+                }
+            }
+
+            for call in &mut all_calls {
+                if let Some(cluster_id) = cluster_membership.get(&call.variant_name) {
+                    if !call.info.is_empty() {
+                        call.info.push_str(&format!(";cluster={}", cluster_id));
+                    } else {
+                        call.info = format!("cluster={}", cluster_id);
+                    }
+                }
+            }
+        }
+    }
 
     // Deduplicate INDEL calls.
     let pre_dedup_count = all_calls.len();
