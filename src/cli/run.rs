@@ -147,6 +147,7 @@ fn process_target(
         ref_path,
         &quant,
         0,
+        db,
     ));
 
     // Process each alternative path (indices 1..).
@@ -161,6 +162,7 @@ fn process_target(
             alt_path,
             &quant,
             i,
+            db,
         ));
     }
 
@@ -176,6 +178,7 @@ fn build_variant_call(
     alt_path: &KmerPath,
     quant: &Quantification,
     path_index: usize,
+    db: &dyn KmerDatabase,
 ) -> VariantCall {
     let ci_lower = quant.ci_lower.get(path_index).copied();
     let ci_upper = quant.ci_upper.get(path_index).copied();
@@ -188,7 +191,7 @@ fn build_variant_call(
         expression: quant.coefficients[path_index],
         min_coverage: quant.min_coverages[path_index],
         path_score: quant.min_coverages[path_index],
-        start_kmer_count: 0, // TODO: first k-mer count from path
+        start_kmer_count: alt_path.kmers.first().map_or(0, |k| db.query(k)),
         ref_sequence: ref_path.to_sequence(),
         alt_sequence: alt_path.to_sequence(),
         info: "vs_ref".to_string(),
