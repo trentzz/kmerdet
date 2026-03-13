@@ -472,7 +472,69 @@ fn make_reference_call(
     }
 }
 
-pub fn run(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
+impl DetectArgs {
+    /// Apply values from a config file for any args that were not explicitly
+    /// set on the command line.
+    pub(crate) fn apply_config(
+        &mut self,
+        cfg: &crate::config::Config,
+        matches: &clap::ArgMatches,
+    ) {
+        let is_set = |id| super::is_subcommand_arg_set(matches, id);
+
+        // db: only apply if not provided on CLI (it's required, so this is
+        // only useful when the config supplies it and the user omits it --
+        // but clap will error first for required args. We handle it for
+        // completeness in case we later make db optional.)
+        if self.targets.is_empty() {
+            if !cfg.detect.targets.is_empty() {
+                self.targets = cfg.detect.targets.clone();
+            }
+        }
+
+        if !is_set("count") {
+            if let Some(v) = cfg.detect.count {
+                self.count = v;
+            }
+        }
+        if !is_set("ratio") {
+            if let Some(v) = cfg.detect.ratio {
+                self.ratio = v;
+            }
+        }
+        if !is_set("max_stack") {
+            if let Some(v) = cfg.detect.max_stack {
+                self.max_stack = v;
+            }
+        }
+        if !is_set("max_break") {
+            if let Some(v) = cfg.detect.max_break {
+                self.max_break = v;
+            }
+        }
+        if !is_set("max_node") {
+            if let Some(v) = cfg.detect.max_node {
+                self.max_node = v;
+            }
+        }
+        if !is_set("cluster") {
+            if let Some(v) = cfg.detect.cluster {
+                self.cluster = v;
+            }
+        }
+    }
+}
+
+pub fn run(
+    mut args: DetectArgs,
+    global: &super::GlobalOptions,
+    cfg: Option<&crate::config::Config>,
+    matches: &clap::ArgMatches,
+) -> Result<()> {
+    if let Some(cfg) = cfg {
+        args.apply_config(cfg, matches);
+    }
+
     // Check for multi-k mode first.
     if let Some(k_values) = args.multi_k.clone() {
         return run_multi_k(args, global, k_values);

@@ -14,11 +14,23 @@ pub mod walker;
 
 use anyhow::Result;
 
-/// Run kmerdet with the parsed CLI arguments.
-pub fn run(cli: cli::Cli) -> Result<()> {
-    init_logging(cli.global.verbose, cli.global.quiet);
+/// Run kmerdet with the parsed CLI arguments and the raw `ArgMatches`.
+///
+/// The `matches` are used to determine which CLI flags were explicitly set
+/// (as opposed to using their clap default values), so that config-file
+/// values can be applied as fallback defaults.
+pub fn run(cli: cli::Cli, matches: clap::ArgMatches) -> Result<()> {
+    // Load config file early (before logging init) so we can apply runtime settings.
+    let cfg = cli::load_config(&cli.global)?;
 
-    if let Some(threads) = std::num::NonZeroUsize::new(cli.global.threads) {
+    let mut global = cli.global.clone();
+    if let Some(ref cfg) = cfg {
+        global.apply_config(cfg, &matches);
+    }
+
+    init_logging(global.verbose, global.quiet);
+
+    if let Some(threads) = std::num::NonZeroUsize::new(global.threads) {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
             .build_global()
@@ -26,15 +38,15 @@ pub fn run(cli: cli::Cli) -> Result<()> {
     }
 
     match cli.command {
-        cli::Command::Detect(args) => cli::detect::run(args, &cli.global),
-        cli::Command::Filter(args) => cli::filter::run(args, &cli.global),
-        cli::Command::Merge(args) => cli::merge::run(args, &cli.global),
-        cli::Command::Stats(args) => cli::stats::run(args, &cli.global),
-        cli::Command::Plot(args) => cli::plot::run(args, &cli.global),
-        cli::Command::Coverage(args) => cli::coverage::run(args, &cli.global),
-        cli::Command::Run(args) => cli::run::run(args, &cli.global),
-        cli::Command::Benchmark(args) => cli::benchmark::run(args, &cli.global),
-        cli::Command::Pon(args) => cli::pon::run(args, &cli.global),
+        cli::Command::Detect(args) => cli::detect::run(args, &global, cfg.as_ref(), &matches),
+        cli::Command::Filter(args) => cli::filter::run(args, &global, cfg.as_ref(), &matches),
+        cli::Command::Merge(args) => cli::merge::run(args, &global),
+        cli::Command::Stats(args) => cli::stats::run(args, &global),
+        cli::Command::Plot(args) => cli::plot::run(args, &global),
+        cli::Command::Coverage(args) => cli::coverage::run(args, &global),
+        cli::Command::Run(args) => cli::run::run(args, &global, cfg.as_ref(), &matches),
+        cli::Command::Benchmark(args) => cli::benchmark::run(args, &global),
+        cli::Command::Pon(args) => cli::pon::run(args, &global),
     }
 }
 
