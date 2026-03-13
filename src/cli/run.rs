@@ -331,7 +331,62 @@ fn write_filter_results(
     Ok(())
 }
 
-pub fn run(args: RunArgs, global: &super::GlobalOptions) -> Result<()> {
+impl RunArgs {
+    /// Apply values from a config file for any args that were not explicitly
+    /// set on the command line.
+    pub(crate) fn apply_config(
+        &mut self,
+        cfg: &crate::config::Config,
+        matches: &clap::ArgMatches,
+    ) {
+        let is_set = |id| super::is_subcommand_arg_set(matches, id);
+
+        // Detect params
+        if !is_set("count") {
+            if let Some(v) = cfg.detect.count {
+                self.count = v;
+            }
+        }
+        if !is_set("ratio") {
+            if let Some(v) = cfg.detect.ratio {
+                self.ratio = v;
+            }
+        }
+        if !is_set("cluster") {
+            if let Some(v) = cfg.detect.cluster {
+                self.cluster = v;
+            }
+        }
+
+        // Filter params
+        if !is_set("use_alt") {
+            if let Some(v) = cfg.filter.use_alt {
+                self.use_alt = v;
+            }
+        }
+        if !is_set("min_coverage") {
+            if let Some(v) = cfg.filter.min_coverage {
+                self.min_coverage = v;
+            }
+        }
+        if !is_set("min_vaf") {
+            if let Some(v) = cfg.filter.min_vaf {
+                self.min_vaf = v;
+            }
+        }
+    }
+}
+
+pub fn run(
+    mut args: RunArgs,
+    global: &super::GlobalOptions,
+    cfg: Option<&crate::config::Config>,
+    matches: &clap::ArgMatches,
+) -> Result<()> {
+    if let Some(cfg) = cfg {
+        args.apply_config(cfg, matches);
+    }
+
     use std::time::Instant;
 
     let total_start = Instant::now();

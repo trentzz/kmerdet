@@ -56,7 +56,52 @@ pub struct FilterArgs {
     pub homopolymer_threshold: usize,
 }
 
-pub fn run(args: FilterArgs, global: &super::GlobalOptions) -> Result<()> {
+impl FilterArgs {
+    /// Apply values from a config file for any args that were not explicitly
+    /// set on the command line.
+    pub(crate) fn apply_config(
+        &mut self,
+        cfg: &crate::config::Config,
+        matches: &clap::ArgMatches,
+    ) {
+        let is_set = |id| super::is_subcommand_arg_set(matches, id);
+
+        if !is_set("min_coverage") {
+            if let Some(v) = cfg.filter.min_coverage {
+                self.min_coverage = v;
+            }
+        }
+        if !is_set("min_vaf") {
+            if let Some(v) = cfg.filter.min_vaf {
+                self.min_vaf = v;
+            }
+        }
+        if !is_set("min_expression") {
+            if let Some(v) = cfg.filter.min_expression {
+                self.min_expression = v;
+            }
+        }
+        if !is_set("use_alt") {
+            if let Some(v) = cfg.filter.use_alt {
+                self.use_alt = v;
+            }
+        }
+        if self.types.is_empty() && !cfg.filter.types.is_empty() {
+            self.types = cfg.filter.types.clone();
+        }
+    }
+}
+
+pub fn run(
+    mut args: FilterArgs,
+    global: &super::GlobalOptions,
+    cfg: Option<&crate::config::Config>,
+    matches: &clap::ArgMatches,
+) -> Result<()> {
+    if let Some(cfg) = cfg {
+        args.apply_config(cfg, matches);
+    }
+
     // 1. Parse detection results from input TSV file
     let calls = parse_detection_results(&args.input)?;
 

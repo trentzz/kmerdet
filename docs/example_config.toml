@@ -1,0 +1,70 @@
+# kmerdet configuration file
+#
+# Usage: kmerdet --config config.toml detect -d sample.jf -T targets/
+#
+# CLI arguments always take precedence over values in this file.
+# Only values that are not explicitly provided on the command line
+# will be read from this config.
+
+# ── Detection parameters ─────────────────────────────────────────────
+[detect]
+# db = "/path/to/sample.jf"        # Jellyfish database (usually passed via CLI)
+# targets = ["/path/to/targets/"]  # Target FASTA files or directories
+
+# Minimum absolute k-mer count to extend a walk branch.
+# Lower values increase sensitivity but also noise. Default: 2
+count = 2
+
+# Minimum count ratio threshold (branch_count / sibling_total).
+# Lower values detect lower-VAF variants. Default: 0.05
+ratio = 0.05
+
+# DFS maximum stack depth. Default: 500
+max_stack = 500
+
+# DFS maximum break count. Default: 10
+max_break = 10
+
+# Maximum graph nodes before aborting. Default: 10000
+max_node = 10000
+
+# Enable overlapping mutation clustering. Default: false
+# cluster = true
+
+# ── Filter parameters ────────────────────────────────────────────────
+[filter]
+# targets = "/path/to/expected_variants.tsv"
+
+# Minimum k-mer coverage to keep a variant. Default: 3
+min_coverage = 3
+
+# Minimum variant allele frequency. Default: 0.0
+min_vaf = 0.0
+
+# Minimum expression (NNLS coefficient) value. Default: 0.0
+min_expression = 0.0
+
+# Match by full ALT_SEQUENCE instead of POS/REF/ALT. Default: false
+# use_alt = true
+
+# Restrict to specific variant types (empty = all types).
+# types = ["Substitution", "Insertion", "Deletion"]
+
+# ── Output settings ──────────────────────────────────────────────────
+[output]
+# Output format: tsv, csv, vcf, json, jsonl, xlsx. Default: tsv
+format = "tsv"
+
+# Output file path. Default: stdout
+# file = "/path/to/output.tsv"
+
+# Omit column headers from output. Default: false
+# no_header = true
+
+# ── Runtime settings ─────────────────────────────────────────────────
+[runtime]
+# Number of threads (0 = all available cores). Default: 0
+threads = 0
+
+# Verbosity level (0=warn, 1=info, 2=debug, 3=trace). Default: 0
+# verbose = 1
