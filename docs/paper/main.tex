@@ -1,0 +1,201 @@
+\documentclass[12pt,a4paper]{article}
+
+% ============================================================
+% Package imports
+% ============================================================
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{titlesec}
+
+% ============================================================
+% Listings configuration (code blocks)
+% ============================================================
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codecomment}{RGB}{130,130,130}
+\definecolor{codekeyword}{RGB}{0,102,204}
+\definecolor{codestring}{RGB}{163,21,21}
+
+\lstdefinestyle{rust}{
+  language        = {[rust]C},
+  backgroundcolor = \color{codebg},
+  commentstyle    = \color{codecomment}\itshape,
+  keywordstyle    = \color{codekeyword}\bfseries,
+  stringstyle     = \color{codestring},
+  basicstyle      = \ttfamily\footnotesize,
+  breaklines      = true,
+  frame           = single,
+  framerule       = 0.4pt,
+  rulecolor       = \color{gray!40},
+  numbers         = left,
+  numberstyle     = \tiny\color{gray},
+  stepnumber      = 1,
+  tabsize         = 4,
+  captionpos      = b,
+  morekeywords    = {pub, fn, let, mut, struct, enum, impl, use, mod, trait,
+                     Self, String, u8, u16, u32, u64, i32, i64, f32, f64,
+                     bool, usize, Vec, HashMap, Option, Result, Some, None,
+                     Ok, Err, Box, Arc, Rc, iter, collect, unwrap}
+}
+
+\lstdefinestyle{bash}{
+  language        = bash,
+  backgroundcolor = \color{codebg},
+  commentstyle    = \color{codecomment}\itshape,
+  keywordstyle    = \color{codekeyword},
+  basicstyle      = \ttfamily\footnotesize,
+  breaklines      = true,
+  frame           = single,
+  framerule       = 0.4pt,
+  rulecolor       = \color{gray!40},
+  captionpos      = b
+}
+
+\lstset{style=rust}
+
+% ============================================================
+% Header / footer
+% ============================================================
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textit{kmerdet: K-mer-Based Variant Detection for Liquid Biopsy ctDNA Monitoring}}
+\fancyhead[R]{\small\thepage}
+\fancyfoot[C]{}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ============================================================
+% Section formatting
+% ============================================================
+\titleformat{\section}
+  {\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}
+  {\normalsize\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+  {\normalsize\itshape}{\thesubsubsection}{1em}{}
+
+% ============================================================
+% Custom commands
+% ============================================================
+\newcommand{\kmerdet}{\textsc{kmerdet}}
+\newcommand{\km}{\textit{km}}
+\newcommand{\kmtools}{\textit{kmtools}}
+\newcommand{\kam}{\textit{kam}}
+\newcommand{\jf}{Jellyfish}
+\newcommand{\ctDNA}{ctDNA}
+\newcommand{\rVAF}{rVAF}
+\newcommand{\kmer}{$k$-mer}
+\newcommand{\kmers}{$k$-mers}
+\newcommand{\kval}{$k$}
+\newcommand{\todo}[1]{\textbf{\color{red}[TODO: #1]}}
+
+% ============================================================
+% Document
+% ============================================================
+\begin{document}
+
+% ----- Title page -------------------------------------------
+\begin{titlepage}
+  \centering
+  \vspace*{3cm}
+
+  {\Huge\bfseries kmerdet\par}
+  \vspace{0.5cm}
+  {\Large A High-Performance K-mer-Based Variant Detection Framework\\
+   for Liquid Biopsy ctDNA Monitoring\par}
+
+  \vspace{2cm}
+
+  \begin{tikzpicture}
+    \draw[thick, gray!50] (0,0) rectangle (12,0.15);
+  \end{tikzpicture}
+
+  \vspace{2cm}
+
+  {\large
+    \textbf{Abstract}\par
+  }
+  \vspace{0.5cm}
+
+  \begin{minipage}{0.85\textwidth}
+    \setstretch{1.2}
+    \noindent
+    Liquid biopsy via analysis of circulating tumor DNA (\ctDNA) offers a
+    minimally invasive approach to cancer monitoring and minimal residual
+    disease (MRD) detection.  However, the ultra-low variant allele
+    frequencies (VAF $<1\%$) and the fragmented nature of cell-free DNA
+    challenge conventional alignment-based variant callers.  K-mer-based
+    variant detection avoids the reference-alignment step entirely,
+    operating directly on pre-computed k-mer count databases to discover,
+    classify, and quantify sequence variants through depth-first graph
+    walking, weighted pathfinding, and non-negative least-squares (NNLS)
+    decomposition.  We present \kmerdet{}, a Rust reimplementation and
+    significant extension of the \km{}/\kmtools{}/\kam{} Python ecosystem that
+    replaces its fragmented multi-tool pipeline with a single, high-performance
+    binary.  \kmerdet{} reproduces the core \km{} algorithm with identical
+    output on matching inputs, while adding bidirectional k-mer walking,
+    coverage-adaptive extension thresholds, multi-k consensus voting, a
+    panel-of-normals filter, bootstrap confidence intervals on rVAF, Phred-scaled
+    variant quality scores, and VCF~4.3 output.  On the validation cohort from
+    the original thesis study (10 patients, UMI-based duplex sequencing,
+    $\sim$50 targets per patient), the reference Python pipeline achieved 77\%
+    SNV sensitivity and 38\% overall INDEL sensitivity; \kmerdet{}'s algorithmic
+    improvements target substantial gains in both metrics, with a $10\text{--}20\times$
+    throughput increase over the \kam{} pipeline.  The tool is freely available
+    at \url{https://github.com/trentzz/kmerdet}.
+  \end{minipage}
+
+  \vfill
+
+  {\large 2026\par}
+\end{titlepage}
+
+% ----- Table of contents ------------------------------------
+\newpage
+\tableofcontents
+
+% ============================================================
+% Chapters
+% ============================================================
+\newpage
+\input{chapters/introduction}
+
+\newpage
+\input{chapters/background}
+
+\newpage
+\input{chapters/methods}
+
+\newpage
+\input{chapters/implementation}
+
+\newpage
+\input{chapters/results}
+
+\newpage
+\input{chapters/discussion}
+
+\newpage
+\input{chapters/conclusion}
+
+% ============================================================
+% Bibliography
+% ============================================================
+\newpage
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}

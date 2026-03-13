@@ -1,0 +1,350 @@
+% ============================================================
+\section{Implementation}
+\label{sec:implementation}
+% ============================================================
+
+\kmerdet{} is written entirely in Rust (edition 2021) and compiles to a single
+statically-linked binary with no runtime dependencies beyond the operating system
+and (optionally) a system libjellyfish.  This section describes the key design
+decisions, the module architecture, and how Rust's type system encodes domain
+knowledge throughout the codebase.
+
+\subsection{Why Rust}
+\label{sec:why-rust}
+
+The choice of Rust~\cite{matsakis2014rust,rustlang} over C++, Python, or Go
+was driven by four properties that are particularly valuable for clinical
+bioinformatics software:
+
+\textbf{Memory safety without garbage collection}.  The borrow checker guarantees
+at compile time that there are no use-after-free, double-free, or data-race
+bugs.  In a tool that processes patient genomic data, silent memory corruption
+errors are unacceptable.  The borrow checker eliminates this class of defect
+entirely without the unpredictable pause times of a garbage collector, which
+matters for deterministic performance in pipeline contexts.
+
+\textbf{Zero-cost abstractions}.  Traits, generics, and iterators in Rust
+compile to code as efficient as hand-written C.  The \texttt{KmerDatabase} trait
+(Section~\ref{sec:trait-abstractions}) has zero runtime overhead: the compiler
+monomorphises each concrete implementation, producing specialised code paths
+without virtual dispatch.
+
+\textbf{Native parallelism}.  The Rayon data-parallelism library~\cite{rayon}
+provides safe parallel iteration through ownership semantics: calling
+\texttt{par\_iter()} on a target vector processes all targets in parallel with
+work-stealing load balancing, and the borrow checker enforces that no target
+accesses shared mutable state (the jellyfish database is read-only and therefore
+safe to share across threads without locking).
+
+\textbf{Single-binary deployment}.  Clinical bioinformatics environments often
+prohibit internet-connected package managers or complex runtime installations.
+A single statically-linked binary with no Python interpreter, no virtual
+environments, and no dynamic library dependencies can be deployed by copying a
+single file, dramatically reducing deployment friction.
+
+The primary trade-off is a steeper learning curve and longer initial development
+time compared to Python.  For a tool intended for long-term use in clinical
+pipelines, this investment is justified by the safety and performance guarantees.
+
+\subsection{Module Architecture}
+\label{sec:architecture}
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+    every node/.style={font=\small},
+    mod/.style={rectangle, draw=gray!60, fill=gray!8, minimum height=0.8cm,
+                minimum width=2.4cm, align=center},
+    cli/.style={rectangle, draw=blue!50, fill=blue!8, minimum height=0.8cm,
+                minimum width=2.4cm, align=center},
+    arrow/.style={-{Latex[length=2mm]}, gray!60}
+  ]
+
+  % Top row: CLI layer
+  \node[cli] (main) at (0, 5) {\texttt{main.rs}};
+  \node[cli] (cli) at (3, 5) {\texttt{cli/}};
+  \node[cli] (config) at (6, 5) {\texttt{config.rs}};
+
+  % Middle row: Algorithm layer
+  \node[mod] (kmer) at (-4.5, 3) {\texttt{kmer/}};
+  \node[mod] (jf) at (-1.5, 3) {\texttt{jellyfish/}};
+  \node[mod] (seq) at (1.5, 3) {\texttt{sequence/}};
+  \node[mod] (walker) at (4.5, 3) {\texttt{walker/}};
+
+  % Lower row
+  \node[mod] (graph) at (-3, 1) {\texttt{graph/}};
+  \node[mod] (variant) at (0, 1) {\texttt{variant/}};
+  \node[mod] (filter) at (3, 1) {\texttt{filter/}};
+  \node[mod] (output) at (6, 1) {\texttt{output/}};
+
+  % Connections
+  \draw[arrow] (main) -- (cli);
+  \draw[arrow] (cli) -- (config);
+  \draw[arrow] (cli) -- (walker);
+  \draw[arrow] (jf) -- (walker);
+  \draw[arrow] (kmer) -- (jf);
+  \draw[arrow] (seq) -- (walker);
+  \draw[arrow] (walker) -- (graph);
+  \draw[arrow] (graph) -- (variant);
+  \draw[arrow] (variant) -- (filter);
+  \draw[arrow] (variant) -- (output);
+
+  \end{tikzpicture}
+  \caption{Module dependency graph for \kmerdet{}.  Blue nodes are the CLI layer;
+    grey nodes are the algorithmic library.  Arrows indicate ``uses'' relationships.}
+  \label{fig:module-graph}
+\end{figure}
+
+The module structure (Figure~\ref{fig:module-graph}) separates concerns cleanly:
+
+\begin{description}
+  \item[\texttt{kmer/}] 2-bit k-mer encoding, canonical form, \texttt{extend\_right},
+    \texttt{extend\_left}.  No I/O, no external dependencies.
+  \item[\texttt{jellyfish/}] \texttt{KmerDatabase} trait; pure-Rust \texttt{.jf}
+    file reader; conditional FFI to libjellyfish (compiled only when
+    \texttt{pkg-config} finds jellyfish).
+  \item[\texttt{sequence/}] Target FASTA loading with \texttt{needletail}~\cite{needletail};
+    \texttt{RefSeq} decomposition into ordered k-mer list; anchor uniqueness validation.
+  \item[\texttt{walker/}] Iterative DFS forward and backward walking;
+    adaptive threshold computation; bidirectional merge.
+  \item[\texttt{graph/}] \texttt{KmerGraph} construction from walk results;
+    Dijkstra pathfinding; reference-edge removal; all-shortest-paths enumeration;
+    DOT visualisation output.
+  \item[\texttt{variant/}] \texttt{VariantType} enum; \texttt{diff\_path\_without\_overlap}
+    classifier; NNLS quantifier with bootstrap CI; INDEL normalisation; clustering
+    for compound variants.
+  \item[\texttt{filter/}] Multi-stage filter pipeline; PoN database; adaptive
+    threshold computation; context annotation.
+  \item[\texttt{output/}] TSV, CSV, VCF, JSON/JSONL, and XLSX writers.
+  \item[\texttt{config/}] TOML configuration loading; \texttt{DetectConfig},
+    \texttt{FilterConfig}, etc.
+  \item[\texttt{cli/}] Clap derive subcommand definitions for \texttt{detect},
+    \texttt{filter}, \texttt{merge}, \texttt{stats}, \texttt{plot},
+    \texttt{coverage}, \texttt{run}, \texttt{benchmark}, \texttt{pon}.
+  \item[\texttt{confidence/}] Statistical scoring: binomial p-values, Fisher's
+    method, Phred-scaled QUAL, strand bias.
+  \item[\texttt{trace/}] Detection trace output (per-target graph visualisation,
+    walking debug output) for algorithm diagnostics.
+\end{description}
+
+\subsection{Type-Driven Design}
+\label{sec:type-driven}
+
+A central design principle is that Rust's type system encodes domain knowledge,
+making incorrect states unrepresentable.
+
+\textbf{The \texttt{Kmer} newtype} prevents accidentally using a raw \texttt{u64}
+as a k-mer.  Operations that are semantically meaningful for k-mers (canonical
+form, extension, string conversion) live on the \texttt{Kmer} type; raw integer
+arithmetic does not.
+
+\textbf{The \texttt{VariantType} enum} has exactly six variants, matching the
+biological classification space.  Code that handles a \texttt{VariantType} must
+be exhaustive (the Rust compiler enforces this), preventing missed cases when
+new variant types are added.
+
+\textbf{The \texttt{VariantCall} struct} encodes the full variant record with
+typed fields: \texttt{rvaf: f64}, \texttt{min\_coverage: u64},
+\texttt{pvalue: Option<f64>}.  The \texttt{Option} type makes it impossible
+to accidentally access the p-value of a call for which no statistical test was
+run; the code \emph{must} handle the \texttt{None} case.
+
+\textbf{The \texttt{WalkResult} struct} wraps both the discovered k-mer node set
+and the reference k-mer set together, ensuring they are always passed as a unit
+and cannot become inconsistent.
+
+\subsection{Trait Abstractions: KmerDatabase}
+\label{sec:trait-abstractions}
+
+The \texttt{KmerDatabase} trait is the central abstraction that allows the same
+algorithmic code to run against both the real jellyfish backend and a mock
+database for testing:
+
+\begin{lstlisting}[style=rust,
+  caption={The KmerDatabase trait (src/jellyfish/mod.rs).}]
+pub trait KmerDatabase: Send + Sync {
+    fn query(&self, kmer: &str) -> u64;
+    fn kmer_length(&self) -> u8;
+    // Default: canonicalize then query
+    fn query_canonical(&self, kmer: &str) -> u64 {
+        self.query(kmer)
+    }
+}
+\end{lstlisting}
+
+The \texttt{Send + Sync} bound is critical: it allows the trait object to be
+shared across Rayon threads safely.  \texttt{Send} means the value can be
+transferred to another thread; \texttt{Sync} means it can be accessed from
+multiple threads simultaneously.  The jellyfish reader satisfies both because
+it is read-only after construction.
+
+The \texttt{MockDb} used in tests implements \texttt{KmerDatabase} with an
+in-memory \texttt{HashMap<String, u64>}, supporting programmatic insertion of
+k-mer counts for precise test control without requiring a real jellyfish
+installation.
+
+\subsection{Pure-Rust Jellyfish Reader}
+\label{sec:jf-reader}
+
+The original \km{} tool requires the jellyfish Python bindings, introducing a
+complex build dependency.  \kmerdet{} provides two backends:
+
+\textbf{FFI backend}: When the build system finds jellyfish via \texttt{pkg-config},
+\texttt{build.rs} generates C++ FFI bindings using \texttt{bindgen} and sets the
+\texttt{has\_jellyfish} configuration flag.  This backend provides exact
+compatibility with all jellyfish versions through the official C API.
+
+\textbf{Pure Rust reader}: The default backend when jellyfish is not installed.
+It memory-maps the \texttt{.jf} file with \texttt{memmap2}, parses the JSON
+header (k-mer length, hash table size, canonical flag, counter width), and
+implements jellyfish's reversible hash function and linear-probing lookup.  The
+memory-mapped approach enables $O(1)$ random-access k-mer queries with minimal
+RAM overhead.
+
+The conditional compilation is declared in \texttt{build.rs}:
+
+\begin{lstlisting}[style=rust,
+  caption={Conditional jellyfish FFI in build.rs.}]
+fn main() {
+    println!("cargo::rustc-check-cfg=cfg(has_jellyfish)");
+    if pkg_config::probe_library("jellyfish-2.0").is_ok() {
+        println!("cargo::rustc-cfg=has_jellyfish");
+        // compile jf_wrapper/jf_wrapper.cpp
+    }
+}
+\end{lstlisting}
+
+All tests pass without jellyfish installed via the \texttt{MockDb}.
+
+\subsection{Parallelisation Strategy}
+\label{sec:parallelism}
+
+Target-level parallelism is the primary source of speedup.  Each target is an
+independent unit of work: its walking, graph construction, pathfinding,
+classification, and quantification steps depend only on the read-only jellyfish
+database.  Rayon's \texttt{par\_iter()} distributes targets across a thread pool
+with work-stealing:
+
+\begin{lstlisting}[style=rust,
+  caption={Parallel target processing (conceptual, from cli/detect.rs).}]
+use rayon::prelude::*;
+
+let calls: Vec<VariantCall> = targets
+    .par_iter()
+    .flat_map(|target| {
+        let ref_kmers = target.decompose(k);
+        let walk = walker::walk_bidirectional(&db, &ref_kmers, &cfg);
+        let graph = graph::build(&walk);
+        let paths = graph::find_paths(&graph);
+        paths.iter()
+            .filter_map(|path| classify_and_quantify(target, path, &walk, &db))
+            .collect::<Vec<_>>()
+    })
+    .collect();
+\end{lstlisting}
+
+The jellyfish database handle is wrapped in \texttt{Arc<dyn KmerDatabase>} so
+the reference-counted pointer can be cloned into each thread.  Because
+\texttt{KmerDatabase: Sync}, all threads can call \texttt{query()} concurrently
+without locks.
+
+The thread pool size defaults to the number of logical CPU cores and is
+configurable via \texttt{--threads N}.  On a typical 16-core server, this
+provides a $10\text{--}14\times$ speedup over single-threaded execution for a
+50-target panel.
+
+\subsection{Error Handling Philosophy}
+\label{sec:error-handling}
+
+\kmerdet{} follows a two-level error handling strategy:
+
+\textbf{Library level}: Typed errors using \texttt{thiserror} with variants for
+\texttt{InvalidKmer}, \texttt{DatabaseError}, \texttt{WalkingError},
+\texttt{ClassificationError}, etc.  These propagate through the library as
+\texttt{Result<T, KmerdetError>}, allowing callers to handle specific failure
+modes.
+
+\textbf{CLI level}: Errors are converted to \texttt{anyhow::Error} at the
+subcommand entry point, which automatically provides contextualised error
+messages with the \texttt{.context()}  chain.  Input validation (file existence,
+format checks, parameter ranges) occurs eagerly before any computation begins,
+so partial output is never written.
+
+\textbf{Per-target errors are non-fatal}: If walking fails for one target
+(e.g., non-unique anchor, empty result set), the error is logged at the
+\texttt{warn} level and processing continues with the remaining targets.  This
+matches \km{}'s behaviour and prevents a single problematic target from blocking
+the entire analysis.
+
+\subsection{CLI Design}
+\label{sec:cli}
+
+The CLI uses Clap's derive API~\cite{clap}, which generates the argument parser
+from annotated structs.  Subcommands map directly to clinical workflow steps:
+
+\begin{lstlisting}[style=bash,
+  caption={kmerdet subcommand overview.}]
+kmerdet detect   --jf sample.jf --targets panel/ --output calls.tsv
+kmerdet filter   --calls calls.tsv --reference known_mutations.tsv
+kmerdet merge    --input run1.tsv run2.tsv --output merged.tsv
+kmerdet stats    --calls filtered.tsv
+kmerdet plot     --calls filtered.tsv --output-dir figures/
+kmerdet coverage --jf sample.jf --targets panel/
+kmerdet pon      build --controls ctrl1.tsv ctrl2.tsv --output normals.pon
+kmerdet run      --jf sample.jf --targets panel/ --reference mutations.tsv
+\end{lstlisting}
+
+Default parameters for \texttt{detect} match the \km{} liquid biopsy
+configuration: \texttt{--count 2 --ratio 0.05}, replicating \km{}'s
+behaviour on identical inputs.  All parameters can be overridden via command
+line or a TOML configuration file (\texttt{--config kmerdet.toml}).
+
+Global flags apply to all subcommands: \texttt{--threads N},
+\texttt{--verbose/-v} (repeatable), \texttt{--quiet/-q}, \texttt{--no-header}.
+
+\subsection{Testing Strategy}
+\label{sec:testing}
+
+\kmerdet{} follows a three-tier testing strategy:
+
+\textbf{Unit tests}: Every public function has at least one unit test.
+K-mer encoding/decoding roundtrips, canonical form correctness, extension
+logic, and classification rules are verified against known examples.
+Property-based tests (using \texttt{proptest}) verify that encoding and
+decoding are mutual inverses for all $4^k$ possible k-mers up to $k = 20$.
+
+\textbf{Integration tests}: The test suite in \texttt{tests/} uses \texttt{MockDb}
+instances to run the full pipeline on synthetic k-mer distributions with
+known ground truth.  Tests cover SNV detection, insertion, deletion, ITD,
+homopolymer edge cases, and boundary conditions (zero-count k-mers,
+single-k-mer targets).
+
+\textbf{Compatibility tests} (marked \texttt{\#[ignore]}, requiring jellyfish):
+Run \kmerdet{} and \km{} on the same \texttt{.jf} databases and target FASTA
+files, comparing TSV output field-by-field.  These tests verify that
+\kmerdet{}'s reference implementation mode produces identical results to \km{}.
+
+\subsection{Performance Characteristics}
+\label{sec:performance}
+
+The k-mer walking algorithm is fundamentally memory-bandwidth bound: each
+extension step performs one hash table lookup in the jellyfish database.
+Memory-mapped \texttt{.jf} files are optimal for this access pattern because
+the OS page cache retains recently accessed pages across queries from different
+threads.
+
+For typical targeted sequencing data (50 targets, 200~bp each, $k = 31$):
+
+\begin{itemize}
+  \item \textbf{Database size}: $\sim$400~MB per jellyfish database (fits in L3
+    cache of modern server CPUs for databases loaded from targeted sequencing).
+  \item \textbf{Walking}: $\sim$10{,}000 k-mer queries per target; 50 targets =
+    500{,}000 total queries.  At $O(1)$ per query, this completes in $<1$ second
+    even single-threaded.
+  \item \textbf{NNLS}: The contribution matrix is $31 \times 3$ for a typical
+    SNV target; solving NNLS is microseconds.  Bootstrap ($B = 1000$) adds
+    $\sim$30~ms per target.
+  \item \textbf{Total pipeline}: $\sim$0.5--2 minutes for 50 targets on a
+    16-core machine with \texttt{--threads 16}, versus $\sim$2 minutes for the
+    Python km component of the \kam{} pipeline on 4 threads.
+\end{itemize}

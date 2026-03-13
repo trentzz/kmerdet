@@ -1,0 +1,492 @@
+% ============================================================
+\section{Methods}
+\label{sec:methods}
+% ============================================================
+
+This section describes the complete \kmerdet{} variant detection algorithm from
+end to end.  Each subsection first describes the corresponding step in the
+original \km{} implementation, then presents the \kmerdet{} enhancements.
+Algorithm~\ref{alg:detect} gives a high-level pseudocode summary of the full
+pipeline.
+
+\begin{algorithm}[t]
+\SetAlgoLined
+\KwIn{Target FASTA file $T$; \jf{} database $\mathcal{D}$; configuration $\theta$}
+\KwOut{Set of \texttt{VariantCall} records $\mathcal{V}$}
+
+$\mathcal{V} \leftarrow \emptyset$\;
+\ForEach{target sequence $t \in T$ \textbf{(in parallel via Rayon)}}{
+  $R \leftarrow$ \textsc{DecomposeTarget}$(t, k)$  \tcp*{reference k-mers, in order}
+  \If{adaptive thresholds enabled}{
+    $\theta_t \leftarrow$ \textsc{AdaptiveThreshold}$(\mathcal{D}, R, \theta)$\;
+  }
+  \If{bidirectional walking}{
+    $W \leftarrow$ \textsc{WalkForward}$(\mathcal{D}, R, \theta_t)$ $\cup$
+                   \textsc{WalkBackward}$(\mathcal{D}, R, \theta_t)$\;
+  }\Else{
+    $W \leftarrow$ \textsc{WalkForward}$(\mathcal{D}, R, \theta_t)$\;
+  }
+  $W \leftarrow$ \textsc{PruneGraph}$(W)$  \tcp*{tip removal, bubble collapsing}
+  $G \leftarrow$ \textsc{BuildGraph}$(W, R)$  \tcp*{directed weighted k-mer graph}
+  $\mathcal{P} \leftarrow$ \textsc{FindPaths}$(G)$  \tcp*{Dijkstra; ref edge removal; all-shortest-paths}
+  \ForEach{alternative path $p \in \mathcal{P}$}{
+    $c \leftarrow$ \textsc{Classify}$(R, p)$  \tcp*{diff\_path\_without\_overlap}
+    $(f, \sigma) \leftarrow$ \textsc{QuantifyNNLS}$(W, R, p)$  \tcp*{rVAF + bootstrap CI}
+    $q \leftarrow$ \textsc{StatisticalScore}$(W, R, p, \mathcal{D})$  \tcp*{binomial p-value + Phred QUAL}
+    $\mathcal{V} \leftarrow \mathcal{V} \cup \{$\textsc{MakeCall}$(t, p, c, f, \sigma, q)\}$\;
+  }
+}
+\Return $\mathcal{V}$\;
+\caption{kmerdet detect: full variant detection pipeline}
+\label{alg:detect}
+\end{algorithm}
+
+\subsection{K-mer Encoding}
+\label{sec:kmer-encoding}
+
+All k-mers in \kmerdet{} are stored as 2-bit packed 64-bit integers.  The
+encoding assigns A$=00$, C$=01$, G$=10$, T$=11$ to each base, packing the
+k-mer into the least-significant $2k$ bits of a \texttt{u64}.  For $k = 31$,
+this occupies 62 bits, fitting in a single 64-bit register with 2 bits to spare.
+
+\begin{equation}
+  \text{encode}(b_1 b_2 \cdots b_k) = \sum_{i=1}^{k} \text{enc}(b_i) \cdot 4^{k-i}
+  \label{eq:kmer-encode}
+\end{equation}
+
+The core \texttt{Kmer} type in \kmerdet{} is:
+
+\begin{lstlisting}[style=rust, caption={The core Kmer type (src/kmer/mod.rs).}]
+pub struct Kmer {
+    pub data: u64,  // 2-bit packed bases, right-aligned
+    pub k: u8,      // k-mer length (up to 32)
+}
+
+impl Kmer {
+    pub fn extend_right(&self, base: u8) -> Self {
+        let shifted = (self.data << 2) | (base as u64 & 0b11);
+        Self::new(shifted, self.k)   // mask to 2k bits
+    }
+
+    pub fn canonical(&self) -> Self {
+        // min(self, self.reverse_complement())
+        canonical::canonical(*self)
+    }
+}
+\end{lstlisting}
+
+\subsubsection{Canonical Form}
+
+\jf{} in canonical mode stores each k-mer and its reverse complement under the
+lexicographically smaller representation.  To match \jf{}'s canonical form
+exactly, \kmerdet{} computes the reverse complement by:
+\begin{enumerate}
+  \item Reversing the bit order of the $2k$ occupied bits (bitwise reversal in 64 bits).
+  \item Complementing each 2-bit pair (XOR with $11_2$ per pair, equivalent to XOR with \texttt{0x5555...}).
+\end{enumerate}
+The canonical form is then $\min(\text{forward}, \text{reverse complement})$ where
+comparison is performed on the raw \texttt{u64} value.
+
+\subsection{Target Loading and Reference Sequence Decomposition}
+\label{sec:target-loading}
+
+Targets are short FASTA sequences (typically 150--500~bp) centred on the variant
+site of interest, with flanking reference sequence that provides unique anchor
+k-mers at each end.  The flanking length is typically 35~bp per side (matching
+the \kam{} \texttt{multiseqex --flank 35} parameter), which is sufficient to
+guarantee a unique $k=31$ anchor for most genomic regions.
+
+For each target sequence, \kmerdet{} decomposes the reference into an ordered
+list of $n - k + 1$ overlapping k-mers where $n$ is the target length.  These
+reference k-mers serve four roles:
+\begin{enumerate}
+  \item \textbf{Walking seeds}: DFS extension starts from each reference k-mer.
+  \item \textbf{Reference path}: The ordered list encodes the expected (wild-type) sequence.
+  \item \textbf{Coverage estimation}: Reference k-mer counts from $\mathcal{D}$ provide local sequencing depth.
+  \item \textbf{Graph anchors}: The first and last reference k-mers serve as the virtual source (BigBang) and sink (BigCrunch) of the pathfinding graph.
+\end{enumerate}
+
+A target validity check verifies that the anchor k-mers occur uniquely in the
+database: if either anchor has count zero, the target is skipped with a
+diagnostic warning; if either is non-unique (count far exceeding neighbour
+counts without a clear signal), the result is flagged as potentially unreliable.
+
+\subsection{K-mer Walking: Depth-First Extension}
+\label{sec:walking}
+
+\subsubsection{Forward Extension}
+
+The walking algorithm discovers all k-mers reachable from the reference by
+iterated single-base extension.  For k-mer $S = s_1 s_2 \cdots s_k$, the four
+forward extensions are $s_2 s_3 \cdots s_k b$ for $b \in \{A, C, G, T\}$.
+Each extension is queried in $\mathcal{D}$, and extensions above the threshold
+are added to the DFS stack.  The extension threshold is:
+
+\begin{equation}
+  \tau = \max\!\bigl(\lfloor \sigma_{\text{sib}} \cdot r \rfloor,\; n_{\min}\bigr)
+  \label{eq:threshold}
+\end{equation}
+
+where $\sigma_{\text{sib}}$ is the sum of counts of all four sibling extensions,
+$r$ is the ratio threshold (default $r = 0.05$ in \kmerdet{}, $0.00001$ for
+maximum sensitivity), and $n_{\min}$ is the absolute count floor (default 2).
+
+The iterative DFS implementation maintains an explicit stack of (k-mer, break\_count)
+tuples, bounded by \texttt{max\_stack} entries in the stack (default 500) and
+\texttt{max\_break} branch-point crossings (default 10).  A branch point
+occurs when $|\text{children}| > 1$.  The total number of discovered nodes is
+capped by \texttt{max\_node} (default 10,000).
+
+\subsubsection{Bidirectional Walking}
+
+Forward-only walking can miss variants near the beginning of a target, because
+there are insufficient upstream reference k-mers from which to extend.  Similarly,
+large deletions that span the right portion of a target may not be discoverable
+by walking left-to-right.
+
+\kmerdet{} adds backward extension, which prepends a base: from k-mer $S$,
+the four backward extensions are $b \cdot s_1 s_2 \cdots s_{k-1}$ for each
+$b$.  Walking both directions and taking the union of discovered nodes improves
+sensitivity for boundary variants and is computationally negligible (each
+backward walk is bounded identically to forward).
+
+\begin{equation}
+  W_{\text{bidir}} = W_{\text{fwd}} \cup W_{\text{bwd}}
+  \label{eq:bidir}
+\end{equation}
+
+When both directions discover the same k-mer, the maximum count is retained.
+
+\subsubsection{Coverage-Adaptive Thresholds}
+\label{sec:adaptive}
+
+The fixed ratio $r$ in equation~\eqref{eq:threshold} fails at coverage extremes.
+At $5000\times$ coverage with $0.1\%$ VAF, the reference count is $\sim$5000
+and the variant count is $\sim$5.  The ratio $5/5000 = 0.001$, far below the
+standard $r = 0.30$ used by \km{} in RNA-seq mode, but the absolute minimum
+$n_{\min} = 2$ saves this branch.  At $50000\times$ coverage, error k-mers
+have expected counts of $\sim$5 (at $0.1\%$ per-base error rate), so $n_{\min}
+= 2$ would pass many error branches.
+
+\kmerdet{}'s adaptive mode estimates the local coverage $C$ from the median
+reference k-mer count in a sliding window of width 15, then sets the threshold
+from a Poisson noise model~\cite{kelley2010quake,guo2024statistically}:
+
+\begin{equation}
+  \lambda_{\varepsilon} = C \cdot \varepsilon / 3
+  \qquad
+  \tau_{\text{adapt}} = \min\!\bigl\{t : P(\text{Poisson}(\lambda_\varepsilon) \geq t) < \mathrm{FER}\bigr\}
+  \label{eq:adaptive}
+\end{equation}
+
+where $\varepsilon \approx 0.001$ is the per-base error rate after UMI
+deduplication and FER is the desired false extension rate (default $0.01$).
+The floor $n_{\min} = 2$ is always enforced for safety.
+
+\subsubsection{Graph Pruning: Tips, Bubbles, and Quick-Rejoin Branches}
+\label{sec:pruning}
+
+Before graph construction, three post-walking pruning steps reduce graph complexity:
+
+\textbf{Tip removal}: A ``tip'' is a chain of non-reference k-mers that
+terminates without rejoining the reference or any other high-coverage path.
+Tips shorter than $\lfloor k/2 \rfloor$ nodes are almost certainly sequencing
+errors (a real variant must change at least 1 and at most $k$ consecutive k-mers
+for substitutions, more for indels).  They are removed from $W$ before graph
+construction.
+
+\textbf{Bubble collapsing}: A ``bubble'' is a pair of paths that share the same
+predecessor and successor nodes but differ by one or a few bases at interior
+positions.  When one path has count $<10\%$ of the other and the bubble spans
+fewer than $k$ nodes, the low-count path is removed.  Bubbles spanning $\geq k$
+nodes are preserved because they represent genuine variant paths.
+
+\textbf{Quick-rejoin pruning}: A non-reference extension that rejoins the
+reference within fewer than $k$ positions cannot represent a real SNV (which
+changes exactly $k$ k-mers) and is a sequencing-error shortcut.  These branches
+are removed.
+
+\subsection{Graph Construction}
+\label{sec:graph}
+
+From the pruned walk result $W$, \kmerdet{} builds a directed weighted graph
+$G = (V, E, w)$:
+
+\begin{itemize}
+  \item \textbf{Nodes} $V$: Each discovered k-mer plus virtual BigBang (source)
+        and BigCrunch (sink) nodes.
+  \item \textbf{Edges} $E$: A directed edge $u \to v$ exists if the $(k-1)$-suffix
+        of $u$ equals the $(k-1)$-prefix of $v$.
+  \item \textbf{Weights} $w$: Reference edges receive weight $w_{\text{ref}} = 0.01$;
+        non-reference edges receive weight $w_{\text{alt}} = 1.0$.  Virtual-node
+        edges connect BigBang to each k-mer with no outgoing reference predecessors
+        and BigCrunch to each k-mer with no outgoing successors.
+\end{itemize}
+
+The asymmetric weighting ($100\times$ lower for reference edges) encodes the
+prior that the reference sequence is by far the most likely path through the
+graph, ensuring Dijkstra's algorithm recovers the reference path as the globally
+shortest path.
+
+\subsection{Pathfinding: Dijkstra, Reference Removal, All-Shortest-Paths}
+\label{sec:pathfinding}
+
+The pathfinding procedure follows the original \km{} approach~\cite{audoux2020km}:
+
+\begin{enumerate}
+  \item Run Dijkstra from BigBang, recording the predecessor of each node in the
+        shortest path tree.
+  \item Run Dijkstra from BigCrunch on the reversed graph, recording successors.
+  \item Remove all reference edges from $G$.
+  \item For each remaining non-reference edge $u \to v$, reconstruct the full
+        path from BigBang through $u \to v$ to BigCrunch by concatenating the
+        BigBang-to-$u$ prefix and the $v$-to-BigCrunch suffix.
+  \item Deduplicate paths; retain each unique sequence.
+\end{enumerate}
+
+This procedure efficiently finds all ``shortest deviation paths'' --- the
+minimum-weight paths from source to sink that include at least one non-reference
+edge.  The two-pass Dijkstra design avoids the combinatorial explosion of
+enumerating all paths by pre-computing prefix and suffix distances.
+
+Figure~\ref{fig:graph-example} illustrates the graph for a simple SNV.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+    node distance=1.8cm,
+    knode/.style={circle, draw=gray!70, fill=gray!10, minimum size=0.9cm, font=\footnotesize},
+    refedge/.style={-{Latex[length=2mm]}, gray, thick},
+    altedge/.style={-{Latex[length=2mm]}, BrickRed, thick},
+    virtnode/.style={rectangle, draw=black!50, fill=black!5, minimum height=0.8cm, font=\footnotesize}
+  ]
+
+  \node[virtnode] (bb) {BigBang};
+  \node[knode, right=of bb] (k1) {$K_1$};
+  \node[knode, right=of k1] (k2) {$K_2$};
+  \node[knode, above right=0.9cm and 1.5cm of k2] (kv) {\textcolor{BrickRed}{$K_v$}};
+  \node[knode, below right=0.9cm and 1.5cm of k2] (k3ref) {$K_3$};
+  \node[knode, right=2.5cm of k2] (k4) {$K_4$};
+  \node[virtnode, right=of k4] (bc) {BigCrunch};
+
+  % Reference edges
+  \draw[refedge] (bb) -- (k1) node[midway,above,font=\tiny] {0.01};
+  \draw[refedge] (k1) -- (k2) node[midway,above,font=\tiny] {0.01};
+  \draw[refedge] (k2) -- (k3ref) node[midway,below,font=\tiny] {0.01};
+  \draw[refedge] (k3ref) -- (k4) node[midway,below,font=\tiny] {0.01};
+  \draw[refedge] (k4) -- (bc) node[midway,above,font=\tiny] {0.01};
+
+  % Variant edge
+  \draw[altedge] (k2) -- (kv) node[midway,above,font=\tiny] {1.0};
+  \draw[altedge] (kv) -- (k4) node[midway,above,font=\tiny] {1.0};
+
+  \end{tikzpicture}
+  \caption{K-mer graph for a simple SNV.  Reference edges (grey, weight 0.01)
+    form the lower path; the variant k-mer $K_v$ (red, weight 1.0) forms an
+    alternative path.  After reference-edge removal, the path
+    BigBang $\to K_1 \to K_2 \to K_v \to K_4 \to$ BigCrunch is the only
+    remaining path and represents the variant allele.}
+  \label{fig:graph-example}
+\end{figure}
+
+\subsection{Variant Classification}
+\label{sec:classification}
+
+Each alternative path is compared to the reference path using the
+\texttt{diff\_path\_without\_overlap} algorithm~\cite{audoux2020km}.  Let $R$
+be the ordered reference k-mer sequence and $A$ the alternative path:
+
+\begin{enumerate}
+  \item Walk from the left to find the first divergence index $i$: the smallest
+        index such that $R[i] \neq A[i]$.
+  \item Walk from the right to find the last divergence indices $j_R$
+        (reference) and $j_A$ (alternative).
+  \item The DNA sequence of the variant region is reconstructed from the k-mers
+        $A[i..j_A]$ by taking the first base of each k-mer and appending all
+        bases of the last k-mer.
+\end{enumerate}
+
+Classification rules (Table~\ref{tab:classification}):
+
+\begin{table}[h]
+  \centering
+  \caption{Variant classification rules in \textsc{diff\_path\_without\_overlap}.}
+  \label{tab:classification}
+  \begin{tabular}{lll}
+    \toprule
+    Condition & \kmerdet{} type & \km{} type \\
+    \midrule
+    $i = j_R = j_A$ & \texttt{Reference} & Reference \\
+    $j_R = j_A$ (same length) & \texttt{Substitution} & Substitution \\
+    $i = j_R^{\text{overlap}}$ & \texttt{Itd} & ITD \\
+    $j_R < j_A$, no deleted bases & \texttt{Insertion} & Insertion \\
+    $j_R > j_A$, no inserted bases & \texttt{Deletion} & Deletion \\
+    Otherwise & \texttt{Indel} & Indel \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+ITD detection relies on the overlap condition: if the divergence from the left
+reaches the end of the reference k-mer sequence before the paths re-converge,
+the variant path contains a duplication of the entire reference region, the
+hallmark of an internal tandem duplication.
+
+\subsubsection{INDEL Normalization}
+
+INDELs produced by k-mer walking may not be in their canonical left-aligned
+representation, particularly in homopolymer and short-repeat contexts.
+\kmerdet{} applies the left-alignment normalization procedure of Tan et
+al.~\cite{tan2015unified} to all insertion and deletion calls, shifting the
+variant position as far left as possible while keeping the reference and
+alternative alleles consistent.  This ensures compatibility with VCF conventions
+and prevents duplicate calls for the same INDEL expressed differently.
+
+\subsection{Quantification: NNLS Decomposition and rVAF}
+\label{sec:nnls}
+
+The \km{} algorithm models k-mer counts as a linear mixture of contributions
+from all paths.  Let $m$ be the number of k-mer positions, $n$ be the number of
+paths (reference + alternatives), and define:
+\begin{itemize}
+  \item $\mathbf{c} \in \mathbb{R}^m$: observed k-mer counts from $\mathcal{D}$.
+  \item $C \in \{0,1,2,\ldots\}^{m \times n}$: contribution matrix where
+    $C_{ij}$ counts how many times k-mer $i$ appears on path $j$.
+  \item $\boldsymbol{\alpha} \in \mathbb{R}_{\geq 0}^n$: path coverage coefficients.
+\end{itemize}
+
+The model is $\mathbf{c} \approx C\boldsymbol{\alpha}$, and we seek the
+non-negative solution minimising the residual:
+\begin{equation}
+  \hat{\boldsymbol{\alpha}} = \arg\min_{\boldsymbol{\alpha} \geq 0}
+    \|C\boldsymbol{\alpha} - \mathbf{c}\|_2^2
+  \label{eq:nnls}
+\end{equation}
+
+This is the standard NNLS problem, solved with the Lawson-Hanson
+algorithm~\cite{lawson1974solving}.  The relative variant allele frequency is:
+\begin{equation}
+  \hat{f}_j = \frac{\hat{\alpha}_j}{\sum_{l} \hat{\alpha}_l}
+  \qquad \forall j \in \{1,\ldots,n\}
+  \label{eq:rvaf}
+\end{equation}
+
+Note that $C_{ij} > 1$ is possible for ITDs, where the duplicated segment
+contributes k-mers to the variant path multiple times.  This is handled
+naturally by the NNLS formulation.
+
+\subsubsection{Bootstrap Confidence Intervals}
+
+The point estimate $\hat{f}_j$ has no associated uncertainty.  \kmerdet{}
+computes 95\% bootstrap confidence intervals by:
+\begin{enumerate}
+  \item Draw $B = 1000$ bootstrap resamples of the count vector $\mathbf{c}^*$
+        by sampling independently from $\text{Poisson}(\hat{c}_i)$ for each
+        position $i$.
+  \item Solve NNLS for each resample to obtain $\hat{f}_j^{(b)}$.
+  \item Report $[F_{2.5\%}, F_{97.5\%}]$ as the confidence interval.
+\end{enumerate}
+
+For a panel of 50 targets with $\sim$3 paths each, the $50 \times 3 \times 1000 =
+150{,}000$ NNLS solutions (each for a system of size $\sim 31 \times 3$) complete
+in $<1$ second with \texttt{ndarray-linalg} Lapack bindings.
+
+\subsection{Statistical Scoring}
+\label{sec:scoring}
+
+For each variant call, \kmerdet{} computes:
+
+\textbf{Per-k-mer binomial p-value}: At each variant k-mer position $i$ with
+count $c_i$ and total sibling count $D_i$, compute $p_i$ from
+equation~\eqref{eq:binomial} using $\varepsilon_k = \varepsilon_{\text{base}} / 3$.
+
+\textbf{Combined p-value}: Fisher's method (equation~\eqref{eq:fisher}) over
+the $m_{\text{eff}}$ approximately independent k-mer positions.
+
+\textbf{Phred-scaled QUAL}: $Q = \min(999, -10 \log_{10} p_{\text{combined}})$.
+
+\textbf{VCF FILTER field}: PASS if $Q \geq 30$ and min\_coverage $\geq 3$;
+otherwise annotated with the failing criterion (LowQual, LowCoverage, etc.).
+
+\subsection{Filtering Pipeline}
+\label{sec:filtering}
+
+\kmerdet{}'s \texttt{filter} subcommand implements a multi-stage pipeline:
+
+\begin{enumerate}
+  \item \textbf{Hard thresholds}: Minimum count (adaptive or fixed), minimum
+    rVAF, minimum expression.
+  \item \textbf{Type exclusion}: Remove \texttt{Reference} type calls; optionally
+    restrict to specific variant types.
+  \item \textbf{Context filters}: Elevated thresholds near homopolymer runs
+    ($\geq 6$~bp), in low-complexity (linguistic complexity $< 0.8$) regions.
+  \item \textbf{Panel-of-normals}: Remove calls present in $>$5\% of PoN
+    samples.
+  \item \textbf{Tumor-informed matching}: Reference mode (match by
+    CHROM/POS/REF/ALT/TYPE) or alt-sequence mode (match by full variant sequence).
+\end{enumerate}
+
+Each stage annotates the call with its FILTER status, enabling retrospective
+analysis of filter performance.
+
+\subsection{Multi-k Detection}
+\label{sec:multik}
+
+To address the fundamental k-mer length constraint on INDEL sensitivity,
+\kmerdet{} supports three multi-k strategies:
+
+\subsubsection{Adaptive k Per Target}
+
+Target metadata specifies a \texttt{recommended\_k} value based on variant type:
+$k = 21$ for large insertions ($L > 15$~bp), $k = 31$ as the standard, $k = 41$
+for targets in segmental duplications or high-repeat regions.  Each target
+queries only one jellyfish database.
+
+\subsubsection{Independent Multi-k with Union Merging}
+
+Run the full pipeline at $k \in \{21, 31, 41\}$; variants detected at multiple
+k values receive a detection-bonus multiplier (20\% per additional k).  Variant
+matching across k values uses left-aligned genomic coordinates after INDEL
+normalisation.
+
+\subsubsection{Consensus Voting}
+
+Rather than a simple union, consensus voting assigns tier labels based on the
+number of k values detecting the variant (Table~\ref{tab:multikvoting}).
+
+\begin{table}[h]
+  \centering
+  \caption{Multi-k consensus voting tiers.}
+  \label{tab:multikvoting}
+  \begin{tabular}{lll}
+    \toprule
+    Detection pattern & Confidence tier & Action \\
+    \midrule
+    All 3 k values & Tier~1 (highest) & PASS automatically \\
+    2 of 3 k values & Tier~2 & PASS with note \\
+    $k=31$ only & Tier~3 & PASS (standard) \\
+    $k=21$ only & Tier~4 & Flag for review \\
+    $k=41$ only & Tier~4 & Flag for review \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Output Formats}
+\label{sec:output}
+
+\kmerdet{} produces output in five formats:
+
+\begin{description}
+  \item[TSV] Tab-separated values with the same column order as \km{}'s output
+    (sample, target, type, variant\_name, rVAF, expression, min\_coverage, \ldots),
+    extended with statistical annotation columns (pvalue, qual, ci\_lower,
+    ci\_upper).  Fully backward-compatible with \km{}/\kmtools{} downstream tools.
+  \item[CSV] Comma-separated equivalent of the TSV format.
+  \item[VCF~4.3] Standard VCF with CHROM, POS, REF, ALT, QUAL, FILTER, INFO,
+    and FORMAT fields.  INFO fields: DP (total depth), AF (rVAF), TLOD (tumour log
+    odds).  FORMAT fields: AD (allelic depths), AF, CI (confidence interval bounds).
+  \item[JSON/JSONL] Machine-readable format for programmatic consumption.
+    JSONL (one record per line) is suitable for streaming and log-based
+    monitoring systems.
+  \item[XLSX] Excel workbook with one worksheet per sample, formatted tables, and
+    per-column colour coding for rVAF values.
+\end{description}

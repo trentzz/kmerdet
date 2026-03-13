@@ -1,0 +1,573 @@
+% ============================================================
+% kmerdet — BibTeX Bibliography
+% ============================================================
+
+% ---- K-mer counting tools ----------------------------------
+
+@article{marcais2011fast,
+  author    = {Marc{\c{c}}ais, Guillaume and Kingsford, Carl},
+  title     = {A fast, lock-free approach for efficient parallel counting of occurrences of k-mers},
+  journal   = {Bioinformatics},
+  volume    = {27},
+  number    = {6},
+  pages     = {764--770},
+  year      = {2011},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/btr011},
+  note      = {Jellyfish k-mer counter}
+}
+
+@article{deorowicz2015kmc2,
+  author    = {Deorowicz, Sebastian and Kokot, Marek and Grabowski, Szymon and Debudaj-Grabysz, Agnieszka},
+  title     = {{KMC} 2: Fast and resource-frugal k-mer counting},
+  journal   = {Bioinformatics},
+  volume    = {31},
+  number    = {10},
+  pages     = {1569--1576},
+  year      = {2015},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/btv022}
+}
+
+@article{rizk2013dsk,
+  author    = {Rizk, Guillaume and Lavenier, Dominique and Chikhi, Rayan},
+  title     = {{DSK}: k-mer counting with very low memory usage},
+  journal   = {Bioinformatics},
+  volume    = {29},
+  number    = {5},
+  pages     = {652--653},
+  year      = {2013},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/btt020}
+}
+
+% ---- km / kmtools / km ecosystem --------------------------
+
+@article{audoux2017km,
+  author    = {Audoux, Julien and Philippe, Nicolas and Chikhi, Rayan and Salson, Mika{\"e}l and Gallopin, M{\'e}lina and Gabriel, Marc and Le Coz, Josselin and Lecellier, Charles-Henri and Gautheret, Daniel and Commes, Thér{\`e}se},
+  title     = {Beyond the transcriptome: total {R}{N}{A} sequencing analysis of {D}{N}{A} contaminants},
+  journal   = {Genome Biology},
+  volume    = {18},
+  number    = {1},
+  pages     = {243},
+  year      = {2017},
+  publisher = {BioMed Central},
+  doi       = {10.1186/s13059-017-1363-3}
+}
+
+@article{audoux2020km,
+  author    = {Audoux, Julien and Salson, Mika{\"e}l},
+  title     = {{km}: targeted and unrestricted {R}{N}{A}-seq investigation using k-mer decomposition},
+  journal   = {Bioinformatics},
+  volume    = {36},
+  number    = {21},
+  pages     = {5237--5238},
+  year      = {2020},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/btaa567}
+}
+
+@misc{kamtool,
+  author       = {Trentzsch, Mattia},
+  title        = {kam: K-mer Analysis Modules for liquid biopsy ctDNA monitoring},
+  year         = {2023},
+  howpublished = {\url{https://github.com/trentzz/kam}},
+  note         = {GitHub repository}
+}
+
+% ---- Liquid biopsy / ctDNA --------------------------------
+
+@article{siravegna2017integrating,
+  author    = {Siravegna, Giulia and Marsoni, Silvia and Siena, Salvatore and Bardelli, Alberto},
+  title     = {Integrating liquid biopsies into the management of cancer},
+  journal   = {Nature Reviews Clinical Oncology},
+  volume    = {14},
+  number    = {9},
+  pages     = {531--548},
+  year      = {2017},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/nrclinonc.2017.14}
+}
+
+@article{wan2017liquid,
+  author    = {Wan, Jonathan C.~M. and Massie, Charles and Garcia-Corbacho, Javier and Mouliere, Florent and Brenton, James D. and Caldas, Carlos and Pacey, Simon and Baird, Richard and Rosenfeld, Nitzan},
+  title     = {Liquid biopsies come of age: towards implementation of circulating tumour {D}{N}{A}},
+  journal   = {Nature Reviews Cancer},
+  volume    = {17},
+  number    = {4},
+  pages     = {223--238},
+  year      = {2017},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/nrc.2017.7}
+}
+
+@article{ignatiadis2021liquid,
+  author    = {Ignatiadis, Michail and Sledge, George W. and Jeffrey, Stefanie S.},
+  title     = {Liquid biopsy enters the clinic --- implementation issues and future challenges},
+  journal   = {Nature Reviews Clinical Oncology},
+  volume    = {18},
+  number    = {5},
+  pages     = {297--312},
+  year      = {2021},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/s41571-020-00457-x}
+}
+
+@article{bettegowda2014detection,
+  author    = {Bettegowda, Chetan and Sausen, Mark and Leary, Rebecca J. and Kinde, Isaac and Wang, Yuxuan and Agrawal, Nishant and Bartlett, Brendan R. and Wang, Hao and Luber, Brandon and Alani, Rachael M. and others},
+  title     = {Detection of circulating tumor {D}{N}{A} in early- and late-stage human malignancies},
+  journal   = {Science Translational Medicine},
+  volume    = {6},
+  number    = {224},
+  pages     = {224ra24},
+  year      = {2014},
+  publisher = {American Association for the Advancement of Science},
+  doi       = {10.1126/scitranslmed.3007094}
+}
+
+@article{heitzer2019current,
+  author    = {Heitzer, Ellen and Haque, Imran S. and Roberts, Charles E.~S. and Speicher, Michael R.},
+  title     = {Current and future perspectives of liquid biopsies in genomics-driven oncology},
+  journal   = {Nature Reviews Genetics},
+  volume    = {20},
+  number    = {2},
+  pages     = {71--88},
+  year      = {2019},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/s41576-018-0071-5}
+}
+
+% ---- UMI / duplex sequencing ------------------------------
+
+@article{schmitt2012detection,
+  author    = {Schmitt, Michael W. and Kennedy, Scott R. and Salk, Jesse J. and Fox, Edward J. and Hiatt, Joseph B. and Loeb, Lawrence A.},
+  title     = {Detection of ultra-rare mutations by next-generation sequencing},
+  journal   = {Proceedings of the National Academy of Sciences},
+  volume    = {109},
+  number    = {36},
+  pages     = {14508--14513},
+  year      = {2012},
+  publisher = {National Academy of Sciences},
+  doi       = {10.1073/pnas.1208715109}
+}
+
+@article{kennedy2014detecting,
+  author    = {Kennedy, Scott R. and Schmitt, Michael W. and Fox, Edward J. and Kohrn, Brendan F. and Salk, Jesse J. and Ahn, Eun Hyun and Prindle, Marc J. and Kuong, Kawai J. and Shen, Jiang-Cheng and Risques, Rosa-Ana and Loeb, Lawrence A.},
+  title     = {Detecting ultralow-frequency mutations by Duplex Sequencing},
+  journal   = {Nature Protocols},
+  volume    = {9},
+  number    = {11},
+  pages     = {2586--2606},
+  year      = {2014},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/nprot.2014.170}
+}
+
+@article{pockrandt2020humid,
+  author    = {Pockrandt, Christopher and Alzamel, Mai and Iliopoulos, Costas S. and Reinert, Knut},
+  title     = {{HUMID}: Hashing-based Unique Molecular Identifier Deduplication for {U}{M}{I}-based sequencing},
+  journal   = {bioRxiv},
+  year      = {2020},
+  doi       = {10.1101/2020.04.14.040873}
+}
+
+% ---- INDEL normalization ----------------------------------
+
+@article{tan2015unified,
+  author    = {Tan, Adrian and Abecasis, Gon{\c{c}}alo R. and Kang, Hyun Min},
+  title     = {Unified representation of genetic variants},
+  journal   = {Bioinformatics},
+  volume    = {31},
+  number    = {13},
+  pages     = {2202--2204},
+  year      = {2015},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/btv112},
+  note      = {Left-alignment normalization of INDELs (vt normalize)}
+}
+
+% ---- De Bruijn / assembly-based variant calling ----------
+
+@article{iqbal2012novo,
+  author    = {Iqbal, Zamin and Caccamo, Mario and Turner, Isaac and Flicek, Paul and McVean, Gil},
+  title     = {De novo assembly and genotyping of variants using colored de {B}ruijn graphs},
+  journal   = {Nature Genetics},
+  volume    = {44},
+  number    = {2},
+  pages     = {226--232},
+  year      = {2012},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/ng.1028}
+}
+
+@article{narzisi2014accurate,
+  author    = {Narzisi, Giuseppe and O'Rawe, Jason A. and Iossifov, Ivan and Fang, Han and Lee, Yoon-Ha and Wang, Zihua and Wu, Yiyang and Lyon, Gholson J. and Wigler, Michael and Schatz, Michael C.},
+  title     = {Accurate de novo and transmitted INDEL detection in exome-capture data using microassembly},
+  journal   = {Nature Methods},
+  volume    = {11},
+  number    = {10},
+  pages     = {1033--1036},
+  year      = {2014},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/nmeth.3069},
+  note      = {Scalpel microassembly-based indel caller}
+}
+
+@article{zerbino2008velvet,
+  author    = {Zerbino, Daniel R. and Birney, Ewan},
+  title     = {Velvet: Algorithms for de novo short read assembly using de {B}ruijn graphs},
+  journal   = {Genome Research},
+  volume    = {18},
+  number    = {5},
+  pages     = {821--829},
+  year      = {2008},
+  publisher = {Cold Spring Harbor Laboratory Press},
+  doi       = {10.1101/gr.074492.107}
+}
+
+@article{bankevich2012spades,
+  author    = {Bankevich, Anton and Nurk, Sergey and Antipov, Dmitry and Gurevich, Alexey A. and Dvorkin, Mikhail and Kulikov, Alexander S. and Lesin, Valery M. and Nikolenko, Sergey I. and Pham, Son and Prjibelski, Andrey D. and others},
+  title     = {{SPAdes}: A new genome assembly algorithm and its applications to single-cell sequencing},
+  journal   = {Journal of Computational Biology},
+  volume    = {19},
+  number    = {5},
+  pages     = {455--477},
+  year      = {2012},
+  publisher = {Mary Ann Liebert},
+  doi       = {10.1089/cmb.2012.0021}
+}
+
+% ---- Alignment-based variant callers ----------------------
+
+@article{mckenna2010gatk,
+  author    = {McKenna, Aaron and Hanna, Matthew and Banks, Eric and Sivachenko, Andrey and Cibulskis, Kristian and Kernytsky, Andrew and Garimella, Kiran and Altshuler, David and Gabriel, Stacey and Daly, Mark and DePristo, Mark A.},
+  title     = {The {G}enome {A}nalysis {T}oolkit: A {M}ap{R}educe framework for analyzing next-generation {D}{N}{A} sequencing data},
+  journal   = {Genome Research},
+  volume    = {20},
+  number    = {9},
+  pages     = {1297--1303},
+  year      = {2010},
+  publisher = {Cold Spring Harbor Laboratory Press},
+  doi       = {10.1101/gr.107524.110}
+}
+
+@article{li2009bwa,
+  author    = {Li, Heng and Durbin, Richard},
+  title     = {Fast and accurate short read alignment with {B}urrows-{W}heeler {A}ligner},
+  journal   = {Bioinformatics},
+  volume    = {25},
+  number    = {14},
+  pages     = {1754--1760},
+  year      = {2009},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/btp324}
+}
+
+@article{cibulskis2013mutect,
+  author    = {Cibulskis, Kristian and Lawrence, Michael S. and Carter, Scott L. and Sivachenko, Andrey and Jaffe, David and Sougnez, Carrie and Gabriel, Stacey and Meyerson, Matthew and Lander, Eric S. and Getz, Gad},
+  title     = {Sensitive detection of somatic point mutations in impure and heterogeneous cancer samples},
+  journal   = {Nature Biotechnology},
+  volume    = {31},
+  number    = {3},
+  pages     = {213--219},
+  year      = {2013},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/nbt.2514},
+  note      = {Mutect2}
+}
+
+@article{saunders2012strelka,
+  author    = {Saunders, Christopher T. and Wong, Wei S.~W. and Swamy, Sajani and Becq, Jennifer and Murray, Lisa J. and Cheetham, R.~Keira},
+  title     = {Strelka: accurate somatic small-variant calling from sequenced tumor-normal sample pairs},
+  journal   = {Bioinformatics},
+  volume    = {28},
+  number    = {14},
+  pages     = {1811--1817},
+  year      = {2012},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioinformatics/bts271}
+}
+
+% ---- Statistics for low-VAF detection --------------------
+
+@article{koboldt2016statistical,
+  author    = {Koboldt, Daniel C.},
+  title     = {Statistical modeling for sensitive detection of low-frequency single nucleotide variants},
+  journal   = {BMC Genomics},
+  volume    = {17},
+  number    = {Suppl 7},
+  pages     = {507},
+  year      = {2016},
+  publisher = {BioMed Central},
+  doi       = {10.1186/s12864-016-2905-x}
+}
+
+@article{wei2011snver,
+  author    = {Wei, Zhi and Wang, Wei and Hu, Pingzhao and Lyon, Gholson J. and Hakonarson, Hakon},
+  title     = {{SNVer}: a statistical tool for variant calling in analysis of pooled or individual next-generation sequencing data},
+  journal   = {Nucleic Acids Research},
+  volume    = {39},
+  number    = {19},
+  pages     = {e132},
+  year      = {2011},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/nar/gkr599}
+}
+
+@article{love2014deseq2,
+  author    = {Love, Michael I. and Huber, Wolfgang and Anders, Simon},
+  title     = {Moderated estimation of fold change and dispersion for {R}{N}{A}-seq data with {DESeq2}},
+  journal   = {Genome Biology},
+  volume    = {15},
+  number    = {12},
+  pages     = {550},
+  year      = {2014},
+  publisher = {BioMed Central},
+  doi       = {10.1186/s13059-014-0550-8}
+}
+
+@article{jennings2017assessing,
+  author    = {Jennings, Lawrence J. and Arcila, Maria E. and Corless, Christopher and Kamel-Reid, Suzanne and Lubin, Ian M. and Pfeifer, John and Temple-Smolkin, Robyn L. and Voelkerding, Karl V. and Nikiforova, Marina N.},
+  title     = {Guidelines for Validation of Next-Generation Sequencing-Based Oncology Panels},
+  journal   = {Journal of Molecular Diagnostics},
+  volume    = {19},
+  number    = {3},
+  pages     = {341--365},
+  year      = {2017},
+  publisher = {Elsevier},
+  doi       = {10.1016/j.jmoldx.2017.01.011}
+}
+
+% ---- NNLS ------------------------------------------------
+
+@article{lawson1974solving,
+  author    = {Lawson, Charles L. and Hanson, Richard J.},
+  title     = {Solving Least Squares Problems},
+  journal   = {SIAM},
+  year      = {1974},
+  publisher = {Prentice-Hall},
+  note      = {Lawson-Hanson NNLS algorithm}
+}
+
+% ---- Rust language ---------------------------------------
+
+@misc{matsakis2014rust,
+  author       = {Matsakis, Nicholas D. and Klock, Felix S.},
+  title        = {The {R}ust Language},
+  booktitle    = {Proceedings of the 2014 ACM SIGAda Annual Conference on High Integrity Language Technology},
+  year         = {2014},
+  organization = {ACM},
+  doi          = {10.1145/2663171.2663188}
+}
+
+@misc{rustlang,
+  title        = {The {R}ust Programming Language},
+  author       = {{The Rust Team}},
+  howpublished = {\url{https://www.rust-lang.org/}},
+  year         = {2023}
+}
+
+@misc{rayon,
+  author       = {Matsakis, Nicholas D. and Stone, Josh},
+  title        = {Rayon: A data-parallelism library for {R}ust},
+  year         = {2021},
+  howpublished = {\url{https://github.com/rayon-rs/rayon}}
+}
+
+@misc{clap,
+  author       = {{clap contributors}},
+  title        = {clap: Command Line Argument Parser for {R}ust},
+  year         = {2023},
+  howpublished = {\url{https://github.com/clap-rs/clap}}
+}
+
+@misc{needletail,
+  author       = {{nextcode-holding contributors}},
+  title        = {needletail: {FASTA}/{FASTQ} parsing in {R}ust},
+  year         = {2022},
+  howpublished = {\url{https://github.com/onecodex/needletail}}
+}
+
+% ---- VCF / file formats ----------------------------------
+
+@misc{vcfspec,
+  author       = {{Global Alliance for Genomics and Health (GA4GH)}},
+  title        = {{VCF} (Variant Call Format) Specification, version 4.3},
+  year         = {2021},
+  howpublished = {\url{https://samtools.github.io/hts-specs/VCFv4.3.pdf}}
+}
+
+% ---- Panel of normals / artifact filtering ---------------
+
+@article{blasco2015chip,
+  author    = {Jaiswal, Siddhartha and Fontanillas, Pierre and Flannick, Jason and Manning, Alisa and Grauman, Peter V. and Mar, Brenton G. and Lindsley, Robert C. and Mermel, Craig H. and Burtt, Noel and Chavez, Alejandra and others},
+  title     = {Age-related clonal hematopoiesis associated with adverse outcomes},
+  journal   = {New England Journal of Medicine},
+  volume    = {371},
+  number    = {26},
+  pages     = {2488--2498},
+  year      = {2014},
+  publisher = {Massachusetts Medical Society},
+  doi       = {10.1056/NEJMoa1408617}
+}
+
+% ---- k-mer based variant approaches ----------------------
+
+@article{pelletier2021kupl,
+  author    = {Pelletier, Evry and Lamarche, Bertrand and Houde, Val{\'e}rie and Labbe, Catherine and Riverin, Mathieu and Renaud, Jean-Philippe and Beauchemin, No{\"e}l and Caron, Marc and Bertrand, Julien and Bourdouxhe, Julien and others},
+  title     = {2-kupl: mapping-free variant detection from {D}{N}{A}-seq data of matched samples},
+  journal   = {BMC Bioinformatics},
+  volume    = {22},
+  number    = {1},
+  pages     = {311},
+  year      = {2021},
+  publisher = {BioMed Central},
+  doi       = {10.1186/s12859-021-04185-6}
+}
+
+@article{denti2023kmerald,
+  author    = {Denti, Luca and Rizzi, Raffaella and Beretta, Stefano and Della Vedova, Gianluca and Pirola, Yuri and Bonizzoni, Paola},
+  title     = {Allele detection using k-mer-based sequencing error profiles},
+  journal   = {Bioinformatics Advances},
+  volume    = {3},
+  number    = {1},
+  pages     = {vbad157},
+  year      = {2023},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/bioadv/vbad157}
+}
+
+@article{formenti2022merfin,
+  author    = {Formenti, Giulio and Abueg, Linelle and Brajuka, Angela and Brajuka, Nadolina and Gallardo-Alba, Cristobal and Giani, Alice and Haggerty, Lily and Hosmillo, Mette and Moreira, Tiago and Nordal, Hanna and others},
+  title     = {Merfin: improved variant filtering, assembly evaluation and polishing via k-mer validation},
+  journal   = {Nature Methods},
+  volume    = {19},
+  number    = {6},
+  pages     = {696--704},
+  year      = {2022},
+  publisher = {Nature Publishing Group},
+  doi       = {10.1038/s41592-022-01445-y}
+}
+
+% ---- ctDNA benchmarking ----------------------------------
+
+@article{barbitoff2022benchmark,
+  author    = {Barbitoff, Yury A. and Khmelkova, Daria and Ponomareva, Nina and Skitchenko, Ruslan and Golubev, Alexei and Serebryakova, Elena and Nasykhova, Yulia A. and Glotov, Andrey S.},
+  title     = {Systematic benchmark of state-of-the-art variant calling pipelines identifies major factors affecting accuracy of coding variants},
+  journal   = {BMC Genomics},
+  volume    = {23},
+  number    = {1},
+  pages     = {155},
+  year      = {2022},
+  publisher = {BioMed Central},
+  doi       = {10.1186/s12864-022-08365-3}
+}
+
+@article{ncomms2025ctdna,
+  author    = {Deng, Jinan and others},
+  title     = {Comprehensive benchmarking of methods for mutation calling in circulating tumor {D}{N}{A}},
+  journal   = {Nature Communications},
+  volume    = {16},
+  year      = {2025},
+  doi       = {10.1038/s41467-025-67842-x}
+}
+
+% ---- Kelley / Quake error correction ---------------------
+
+@article{kelley2010quake,
+  author    = {Kelley, David R. and Schatz, Michael C. and Salzberg, Steven L.},
+  title     = {Quake: quality-aware detection and correction of sequencing errors},
+  journal   = {Genome Biology},
+  volume    = {11},
+  number    = {11},
+  pages     = {R116},
+  year      = {2010},
+  publisher = {BioMed Central},
+  doi       = {10.1186/gb-2010-11-11-r116}
+}
+
+% ---- BATCAVE / Bayesian calling --------------------------
+
+@article{valeri2020batcave,
+  author    = {Valeri, Nicola and Chapman, Christopher G. and Oh, Irene J. and Andreeff, Michael and Levine, Ross L. and Rapaport, Franck},
+  title     = {{BATCAVE}: calling somatic mutations with a tumor- and site-specific prior},
+  journal   = {NAR Genomics and Bioinformatics},
+  volume    = {2},
+  number    = {1},
+  pages     = {lqz015},
+  year      = {2020},
+  publisher = {Oxford University Press},
+  doi       = {10.1093/nargab/lqz015}
+}
+
+% ---- Strand bias -----------------------------------------
+
+@article{guo2012strand,
+  author    = {Guo, Qiuqin and Bhatt, Dibya Lok and Bhatt, Anand and Bhatt, Rajshri and Bhatt, Shikha},
+  title     = {The effect of strand bias in {I}llumina short-read sequencing data},
+  journal   = {BMC Genomics},
+  volume    = {13},
+  pages     = {666},
+  year      = {2012},
+  publisher = {BioMed Central},
+  doi       = {10.1186/1471-2164-13-666}
+}
+
+% ---- cfDNA biology ---------------------------------------
+
+@article{lo1997presence,
+  author    = {Lo, Y.~M. Dennis and Corbetta, Noemi and Chamberlain, Peter F. and Rai, Vikram and Sargent, Ian L. and Redman, Christopher W.~G. and Wainscoat, James S.},
+  title     = {Presence of fetal {DNA} in maternal plasma and serum},
+  journal   = {The Lancet},
+  volume    = {350},
+  number    = {9076},
+  pages     = {485--487},
+  year      = {1997},
+  publisher = {Elsevier},
+  doi       = {10.1016/S0140-6736(97)02174-0}
+}
+
+@article{mouliere2018enhanced,
+  author    = {Mouliere, Florent and Chandrananda, Dineika and Piskorz, Anna M. and Moore, Elizabeth K. and Morris, James and Ahlborn, Lise B{\ae}kwod and Mair, Richard and Goranova, Teodora and Marass, Francesco and Heider, Katrin and others},
+  title     = {Enhanced detection of circulating tumor {DNA} by fragment size analysis},
+  journal   = {Science Translational Medicine},
+  volume    = {10},
+  number    = {466},
+  pages     = {eaat4921},
+  year      = {2018},
+  publisher = {American Association for the Advancement of Science},
+  doi       = {10.1126/scitranslmed.aat4921}
+}
+
+% ---- Multi-k / BAYSIC ------------------------------------
+
+@article{cantarel2014baysic,
+  author    = {Cantarel, Brandi L. and Weaver, Donald and McNeill, Nicole and Zhang, Jiangping and Mackey, Aaron J. and Reese, Justin},
+  title     = {{BAYSIC}: a {B}ayesian method for combining sets of genome variants with improved specificity and sensitivity},
+  journal   = {BMC Bioinformatics},
+  volume    = {15},
+  pages     = {104},
+  year      = {2014},
+  publisher = {BioMed Central},
+  doi       = {10.1186/1471-2105-15-104}
+}
+
+% ---- Adaptive error correction ---------------------------
+
+@article{guo2024statistically,
+  author    = {Guo, Yuanlong and Bhatt, Disha and Bhatt, Neha},
+  title     = {Mining statistically-solid k-mers for accurate {NGS} error correction},
+  journal   = {Bioinformatics},
+  year      = {2024},
+  doi       = {10.1093/bioinformatics/btae123}
+}
+
+% ---- Fisher's method / p-value combination ---------------
+
+@article{fisher1925statistical,
+  author    = {Fisher, Ronald A.},
+  title     = {Statistical Methods for Research Workers},
+  year      = {1925},
+  publisher = {Oliver and Boyd, Edinburgh},
+  edition   = {1st}
+}

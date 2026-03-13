@@ -1,0 +1,77 @@
+{
+  "description": "Reference performance of the original km/kam pipeline from the thesis validation study",
+  "source": "Thesis validation study, n=10 patients, UMI-based duplex sequencing",
+  "reference": "Thesis Chapters 4-6, kam pipeline v0.x",
+  "cohort": {
+    "n_patients": 10,
+    "sequencing_method": "UMI-based duplex sequencing",
+    "panel_type": "Patient-specific targeted panels (tumor-informed)",
+    "sample_type": "Serial blood draws at multiple timepoints",
+    "preprocessing": "HUMID UMI deduplication before jellyfish counting",
+    "typical_depth_x": "2000-5000",
+    "typical_panel_size_targets": 50
+  },
+  "pipeline": {
+    "tools": ["HUMID", "jellyfish", "multiseqex", "refolder", "kmtools chunk", "kmtools filter"],
+    "km_version": "km (Python, RNA-seq tool adapted for liquid biopsy)",
+    "kmtools_version": "kmtools (Python orchestration layer)"
+  },
+  "parameters": {
+    "k": 31,
+    "canonical_mode": true,
+    "jellyfish_lower_count": 2,
+    "km_count": 2,
+    "km_ratio": 1e-5,
+    "flank_bp": 35,
+    "threads": 4
+  },
+  "accuracy": {
+    "overall_snv_sensitivity":          0.77,
+    "overall_indel_sensitivity":        0.38,
+    "indel_sensitivity_small_1_7bp":   null,
+    "indel_sensitivity_large_gt7bp":    0.03,
+    "vaf_detection_threshold_fraction": 0.001,
+    "notes": [
+      "SNV sensitivity 77% vs 90-95% for alignment-based pipelines (13-18 pp gap)",
+      "INDEL sensitivity 38% overall; near-zero (~3%) for INDELs >7 bp",
+      "Detection threshold ~0.1% VAF (count=2, 3000x effective coverage)",
+      "No FP rate reported (pipeline optimized for specificity in thesis)",
+      "False negatives: primarily <0.1% VAF and homopolymer INDEL contexts"
+    ]
+  },
+  "performance": {
+    "end_to_end_runtime_seconds":     360,
+    "humid_dedup_seconds":            120,
+    "jellyfish_count_seconds":         90,
+    "multiseqex_refolder_seconds":     10,
+    "km_detect_seconds":              120,
+    "kmtools_filter_seconds":          15,
+    "peak_rss_mb":                    null,
+    "speedup_vs_alignment_based":     "10-20x",
+    "notes": [
+      "Measured on typical 50-target panel with 4 threads",
+      "km detect step ~2 min (equivalent to kmerdet detect)",
+      "HUMID is single-threaded; main bottleneck at 33% of total time",
+      "jellyfish count parallelized to 8 threads in some configurations"
+    ]
+  },
+  "comparison_alignment_based": {
+    "snv_sensitivity_alignment":    "0.90-0.95",
+    "indel_sensitivity_alignment":  "0.80-0.95",
+    "total_runtime_minutes":        "60-120",
+    "tools":                        "BWA-MEM + GATK Mutect2",
+    "snv_sensitivity_kmer_at_gt1pct_vaf":     0.95,
+    "snv_sensitivity_kmer_at_0_1_to_1pct_vaf": 0.60,
+    "indel_sensitivity_short_kmer":            0.38,
+    "indel_sensitivity_long_kmer":             0.03
+  },
+  "known_limitations": [
+    "SNV sensitivity ceiling at 77% due to fixed walking thresholds",
+    "INDEL collapse: k-mer length constraint limits large INDEL detection",
+    "VAF threshold ~0.1%: count-2 floor prevents sub-threshold detection",
+    "No UMI integration: cannot distinguish PCR artifacts from true variants at k-mer level",
+    "Fixed parameters: same count/ratio applied to all targets regardless of coverage",
+    "No quality-weighted counting: all k-mers treated equally regardless of base quality",
+    "Target design failures are silent: non-unique anchors produce wrong results without warning"
+  ]
+}

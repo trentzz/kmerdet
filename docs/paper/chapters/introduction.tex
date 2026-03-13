@@ -1,0 +1,192 @@
+% ============================================================
+\section{Introduction}
+\label{sec:introduction}
+% ============================================================
+
+\subsection{Liquid Biopsy and the Clinical Need for Rapid Variant Detection}
+
+The analysis of cell-free DNA (cfDNA) circulating in peripheral blood has
+emerged as one of the most consequential advances in precision oncology over the
+past decade~\cite{wan2017liquid}.  Unlike solid-tissue biopsies, which are
+invasive, single-site snapshots of tumour heterogeneity, liquid biopsies
+provide minimally invasive access to the collective genetic landscape of all
+tumour foci through the tumour-derived fraction of cfDNA, termed circulating
+tumour DNA (\ctDNA{})~\cite{siravegna2017integrating}.  Clinical applications
+span screening for early-stage cancer, treatment selection by detection of
+actionable mutations, longitudinal monitoring of therapeutic response, and early
+detection of relapse through minimal residual disease (MRD) surveillance.
+
+The MRD monitoring context imposes the most stringent demands on sensitivity.
+After curative-intent treatment, \ctDNA{} may persist at variant allele
+frequencies (VAF) as low as $0.01\text{--}0.1\%$ of total cfDNA, and the
+ability to detect this ultra-low-level signal provides early warning of
+impending relapse, often weeks to months before clinical symptoms appear or
+imaging findings are detectable~\cite{bettegowda2014detection,heitzer2019current}.
+At VAF $= 0.1\%$ with $3000\times$ sequencing depth, a true somatic variant
+will produce only $\sim$3 supporting reads per target position --- a signal
+barely distinguishable from sequencing error rates of $0.1\text{--}1\%$.
+
+The standard bioinformatics pipeline for somatic variant detection --- alignment
+of reads to a reference genome, followed by variant calling with tools such as
+GATK Mutect2~\cite{cibulskis2013mutect} or Strelka2~\cite{saunders2012strelka}
+--- achieves excellent sensitivity for germline variants and for somatic
+mutations at moderate VAF ($>5\%$), but its performance degrades substantially
+in the ultra-low-VAF regime characteristic of MRD monitoring.  Furthermore, the
+alignment-variant-calling pipeline is computationally intensive (1--2 hours for
+a typical targeted panel), incompatible with same-day clinical reporting.
+
+\subsection{The K-mer Variant Detection Paradigm}
+
+K-mer-based variant detection offers a complementary approach that sidesteps
+the alignment step entirely~\cite{audoux2017km,audoux2020km}.  Rather than
+aligning reads to a reference and then identifying positions where aligned
+bases differ, k-mer analysis pre-computes a count database of all distinct
+substrings of length $k$ (k-mers) in the sequencing data, then \emph{walks}
+through k-mer space from a known reference sequence to discover all variant
+paths supported by the data.
+
+The core insight is that a single nucleotide variant (SNV) changes exactly $k$
+consecutive k-mers relative to the reference; an insertion of length $L$ creates
+$L + k - 1$ novel k-mers; a deletion removes junction k-mers and creates $k - 1$
+new spanning k-mers.  If the count database is queried for all possible single-base
+extensions of each reference k-mer, branching points in the resulting graph
+reveal the locations of variants, and the counts along each path quantify their
+allele frequency.
+
+This approach has several compelling properties for the liquid biopsy setting.
+First, k-mer counting is entirely reference-free in its counting phase: all
+k-mers present in the sequencing data are counted without any prior alignment.
+This eliminates reference bias and avoids the loss of reads that align poorly
+due to large insertions or tandem duplications, which are particularly common
+clinical targets (e.g., FLT3-ITD in AML).  Second, k-mer counts are directly
+proportional to molecular abundance, providing a natural linear model for
+variant allele frequency estimation.  Third, with modern k-mer counters such as
+\jf{}~\cite{marcais2011fast}, the pre-computation phase is extremely fast
+($\sim$1.5 minutes for a typical targeted sequencing run), and individual k-mer
+lookups are $O(1)$ from the resulting hash table, enabling rapid processing of
+many targets in parallel.
+
+\subsection{The km/kmtools/kam Ecosystem and Its Limitations}
+
+The \km{} tool (IRIC Bioinformatics, Audoux et al.~\cite{audoux2017km,audoux2020km})
+implements the k-mer walking algorithm described above and has been validated for
+targeted variant detection in haematological malignancies, particularly for
+detection of FLT3-ITD and NPM1 insertion mutations in AML.  \km{} is a
+Python tool that interfaces with \jf{} through its Python bindings and produces
+tabular output describing all variant paths detected for each target sequence.
+
+The \kmtools{} companion package and the \kam{} pipeline
+(Trentzsch~\cite{kamtool}) extend \km{} with parallelism (distributing targets
+across threads), filtering (matching detected variants against known patient
+mutations), merging of multi-run outputs, statistical summaries, and
+visualisation.  The \kam{} Docker container integrates the entire workflow from
+raw FASTQ reads through deduplicated k-mer counting (via HUMID~\cite{pockrandt2020humid})
+to filtered variant calls.
+
+Validation of the \kam{} pipeline on a 10-patient cohort of liquid biopsy MRD
+samples sequenced with UMI-based duplex sequencing revealed several significant
+limitations.  SNV sensitivity reached only 77\%, substantially below the
+90--95\% achieved by alignment-based callers on the same samples.  INDEL
+sensitivity was dramatically lower at 38\% overall and near-zero ($\sim$3\%) for
+insertions longer than 7~bp, primarily due to fundamental constraints of the
+k-mer length relative to insertion size.  The practical VAF detection threshold
+was approximately 0.1\%, limiting the approach's utility for the deepest MRD
+monitoring scenarios.
+
+Beyond sensitivity, the \km{}/\kmtools{}/\kam{} ecosystem has architectural
+limitations.  It is implemented in Python with C++ \jf{} bindings, requiring
+separate processes for deduplication, counting, detection, and filtering.
+Parallelism is achieved by pre-distributing target files across subdirectories
+(\textit{refolder}) rather than through native thread-level parallelism.  The
+DFS walking algorithm uses fixed extension thresholds that cannot adapt to
+sample-specific coverage depth or error rate.  Variant calls carry no
+statistical quality annotation: there are no p-values, confidence intervals on
+rVAF, strand bias scores, or Phred-scaled quality metrics, making the output
+incompatible with standard VCF-based downstream analysis.
+
+\subsection{kmerdet: Goals and Contributions}
+
+\kmerdet{} is a Rust reimplementation and significant algorithmic extension of
+the \km{}/\kmtools{}/\kam{} ecosystem, designed to address each of the
+limitations described above while maintaining full backward compatibility with
+existing \km{} outputs and target catalogs.
+
+The primary contributions of \kmerdet{} are:
+
+\begin{enumerate}
+
+  \item \textbf{Single-binary pipeline}: \kmerdet{} replaces the
+    multi-process \kam{} pipeline (\textit{HUMID} + \textit{jellyfish} +
+    \textit{multiseqex} + \textit{refolder} + \textit{kmtools chunk} +
+    \textit{kmtools filter}) with a unified binary providing subcommands
+    \texttt{detect}, \texttt{filter}, \texttt{merge}, \texttt{stats},
+    \texttt{plot}, \texttt{coverage}, and \texttt{run}, eliminating process
+    spawn overhead, intermediate file I/O, and external dependency management.
+
+  \item \textbf{Native parallelism}: Target-level parallelism is implemented
+    using Rayon's work-stealing scheduler~\cite{rayon}, automatically
+    distributing work across all available cores without the file-organisation
+    overhead of \textit{refolder} + \textit{kmtools chunk}.
+
+  \item \textbf{Bidirectional k-mer walking}: The DFS walker extends k-mers
+    both forward (rightward) and backward (leftward) from every reference
+    k-mer, improving detection of variants near target boundaries and deletions
+    that span reference anchor regions.
+
+  \item \textbf{Coverage-adaptive extension thresholds}: Extension thresholds
+    are computed from a per-sample Poisson noise model calibrated against the
+    local reference k-mer coverage, replacing the fixed \texttt{ratio} and
+    \texttt{count} parameters that cannot adapt to coverage variation between
+    samples and targets.
+
+  \item \textbf{Multi-k consensus detection}: Running the walking algorithm at
+    multiple k values ($k = 21, 31, 41$ or per-target adaptive selection)
+    with weighted consensus voting substantially improves INDEL sensitivity by
+    providing more spanning k-mers for large insertions at shorter k.
+
+  \item \textbf{Statistical quality annotation}: Each variant call is
+    annotated with a binomial p-value (combined across k-mer positions using
+    Fisher's method~\cite{fisher1925statistical}), a Phred-scaled QUAL score,
+    and a 95\% bootstrap confidence interval on rVAF, enabling standard
+    VCF-compatible filtering.
+
+  \item \textbf{Panel-of-normals filtering}: A built-in panel-of-normals (PoN)
+    subcommand builds and applies a database of recurrent artifacts observed in
+    healthy controls, suppressing systematic sequencing errors, CHIP variants,
+    and common germline polymorphisms.
+
+  \item \textbf{Graph pruning}: Post-walking tip removal, bubble collapsing,
+    and dead-end pruning reduce graph complexity and eliminate short error-
+    derived branches before pathfinding, improving both precision and speed.
+
+  \item \textbf{VCF 4.3 output}: Full VCF 4.3~\cite{vcfspec} output with
+    standard INFO/FORMAT fields (DP, AF, QUAL, FS, TLOD) alongside the
+    existing TSV format, enabling direct integration with downstream analysis
+    pipelines.
+
+\end{enumerate}
+
+The guiding principle throughout is \emph{correctness before cleverness}: every
+algorithmic deviation from \km{}'s behaviour is intentional, documented, and
+validated against the reference implementation.  On identical inputs, \kmerdet{}
+produces output that matches \km{}'s TSV format field-for-field.
+
+\subsection{Paper Structure}
+
+The remainder of this paper is organised as follows.
+Section~\ref{sec:background} reviews the biological context of liquid biopsy
+ctDNA monitoring, relevant genomics methods, and the statistical challenges of
+ultra-low-VAF variant detection.
+Section~\ref{sec:methods} presents the complete \kmerdet{} algorithm, from
+k-mer encoding through walking, graph construction, pathfinding, variant
+classification, and NNLS quantification, including all algorithmic improvements
+over \km{}.
+Section~\ref{sec:implementation} describes the Rust implementation, key design
+decisions, and the type-driven architecture that makes the codebase both safe
+and extensible.
+Section~\ref{sec:results} presents benchmark results comparing \kmerdet{} with
+the \kam{} pipeline on the validation cohort, with placeholder structure for
+planned benchmarking experiments.
+Section~\ref{sec:discussion} discusses the clinical implications of the
+improvements, remaining limitations, and future research directions.
+Section~\ref{sec:conclusion} concludes.

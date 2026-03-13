@@ -1,0 +1,53 @@
+% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% ============================================================
+
+We have presented \kmerdet{}, a high-performance Rust reimplementation and
+algorithmic extension of the \km{}/\kmtools{}/\kam{} k-mer-based variant
+detection ecosystem.  \kmerdet{} replaces a fragmented multi-process Python
+pipeline with a single, statically-linked binary that provides a familiar
+subcommand interface, native parallelism, and output formats compatible with
+downstream VCF-based analysis workflows.
+
+The motivation for \kmerdet{} is the compelling combination of properties that
+k-mer-based variant detection offers for liquid biopsy \ctDNA{} monitoring: no
+reference alignment bias, direct linear quantification of allele frequency,
+rapid execution from a pre-computed k-mer database, and natural handling of
+complex structural variants such as FLT3-ITD that challenge alignment-based
+callers.  These properties make k-mer detection uniquely suited to the targeted,
+tumor-informed MRD monitoring setting, where the set of variants to query is
+known in advance and same-day clinical reporting is the primary goal.
+
+The thesis validation study that motivated \kmerdet{} established the baseline
+performance of the \km{}/\kam{} pipeline at 77\% SNV sensitivity and 38\% INDEL
+sensitivity on 10 patients with UMI-based duplex sequencing.  The algorithmic
+improvements in \kmerdet{} --- bidirectional walking, coverage-adaptive extension
+thresholds, multi-k consensus detection, statistical quality annotation, graph
+pruning, and panel-of-normals filtering --- are designed to close a substantial
+portion of the sensitivity gap relative to alignment-based callers, particularly
+for INDEL detection, while maintaining the speed advantage that enables same-day
+clinical reporting.
+
+The type-driven Rust architecture ensures that \kmerdet{} is both safe (the
+borrow checker eliminates memory safety bugs at compile time) and extensible (the
+\texttt{KmerDatabase} trait abstracts the counting backend; the \texttt{VariantCall}
+struct is the stable data contract for all downstream tools).  The
+\texttt{MockDb} test infrastructure enables comprehensive testing without a
+jellyfish installation, lowering the barrier to contribution from the
+bioinformatics community.
+
+Looking forward, the most impactful research directions are UMI-aware molecular
+k-mer counting (which would eliminate the need for separate HUMID deduplication
+and push the detection threshold below 0.01\% VAF), strand-aware counting
+(providing the strand bias quality metric currently absent from k-mer analysis),
+and in-process deduplication (reducing the end-to-end pipeline from $\sim$4
+minutes to $<2$ minutes).  Together, these advances would enable \kmerdet{} to
+approach the sensitivity of duplex sequencing error-correction pipelines while
+retaining the speed and simplicity of k-mer-based analysis.
+
+The combination of speed, sensitivity, and clinical interpretability positions
+\kmerdet{} as a practical tool for the bioinformatics laboratory seeking to
+deploy k-mer-based liquid biopsy monitoring alongside, or eventually in place of,
+traditional alignment-based variant callers.  The open-source Rust implementation
+provides a stable, testable, and deployable foundation for this clinical use case.

@@ -1,0 +1,247 @@
+% ============================================================
+\section{Discussion}
+\label{sec:discussion}
+% ============================================================
+
+\subsection{Improvements Over km/kmtools: A Systematic Assessment}
+
+\kmerdet{} addresses each of the ten limitations identified in the thesis
+validation study~\cite{kamtool}.  This subsection evaluates each improvement
+in the context of the original findings.
+
+\subsubsection{SNV Sensitivity (Baseline: 77\%)}
+
+The thesis found that 23\% of true SNVs were missed, with false negatives
+concentrated at VAF $< 0.1\%$ and in high-background-noise genomic regions.
+Three complementary improvements in \kmerdet{} address this:
+
+\textbf{Adaptive thresholds} (Section~\ref{sec:adaptive}): Rather than the
+fixed \texttt{count=2} floor, the Poisson noise model sets the threshold
+proportional to local coverage.  At $50,000\times$ coverage (achievable with
+modern ultra-deep targeted panels), a variant at $0.1\%$ VAF has expected
+count $\sim$50, and the error background has expected count $\sim$50 as well
+(at $0.1\%$ per-base error rate).  A fixed threshold of 2 would pass all error
+branches; an adaptive threshold of $\sim$20 (the $99.9\%$ quantile of
+$\text{Poisson}(16.7)$) reduces false extensions while detecting variants above
+$0.1\%$ VAF.
+
+\textbf{Bidirectional walking}: Variants within $k$ positions of the target
+start or end were systematically missed by forward-only walking.  Backward
+walking from the target end provides symmetric coverage of boundary regions.
+
+\textbf{Statistical quality scores}: The Phred-scaled QUAL score enables
+downstream filtering by statistical significance rather than by fixed count
+thresholds alone, allowing borderline calls (QUAL 20--29) to be reviewed
+separately from high-confidence calls (QUAL $\geq 30$).
+
+\subsubsection{INDEL Sensitivity (Baseline: 38\% Overall, $\sim$3\% for $>7$~bp)}
+
+The INDEL sensitivity limitation is fundamentally rooted in the k-mer length
+constraint: for $k = 31$, insertions of length $L > 31$ have zero spanning
+k-mers.  \kmerdet{}'s multi-k strategy directly addresses this.
+
+For insertions of length $L$, the number of spanning k-mers with k-mer length
+$k$ is $\max(0, k - L)$.  The number of spanning k-mers \emph{triples} when
+switching from $k = 31$ to $k = 21$ for a 20~bp insertion: from
+$\max(0, 31 - 20) = 11$ to $\max(0, 21 - 20) = 1$ --- still small but
+non-zero.  For an 18~bp insertion, $k = 21$ provides $21 - 18 = 3$ spanning
+k-mers versus $31 - 18 = 13$ at $k = 31$.  The absolute count of these spanning
+k-mers at 0.1\% VAF and 3000$\times$ coverage is $\sim$3, which is above the
+minimum count floor of 2.
+
+The multi-k consensus voting approach (Section~\ref{sec:multik}) combines evidence
+from $k \in \{21, 31, 41\}$, providing complementary sensitivity profiles:
+$k = 21$ is most sensitive for large indels; $k = 41$ provides highest
+specificity in repetitive regions; $k = 31$ is the validated standard for SNVs.
+
+\subsubsection{VAF Detection Threshold (Baseline: $\sim$0.1\%)}
+
+Pushing the detection threshold below $0.1\%$ VAF requires either higher
+sequencing depth, better error suppression, or smarter statistical modelling.
+\kmerdet{} addresses the last of these through the negative binomial model and
+bootstrap confidence intervals.  The PoN filter reduces the false positive
+background, allowing lower effective detection thresholds without inflating the
+false positive rate.
+
+The fundamental barrier remains sequencing depth and error rate: at $0.01\%$
+VAF with $5000\times$ coverage, variant k-mers have expected count $\sim$0.5,
+below any reasonable minimum count threshold.  Duplex consensus sequencing,
+which the \kam{} pipeline currently does not use for k-mer counting, could push
+the error rate from $\sim$$10^{-4}$ to $\sim$$10^{-7}$, enabling reliable
+detection at $0.01\%$ VAF.
+
+\subsubsection{Adaptive Parameters}
+
+The \km{} pipeline applies the same \texttt{count=2, ratio=0.00001} to all
+targets regardless of local coverage.  \kmerdet{}'s adaptive mode computes
+per-target thresholds from the observed reference k-mer distribution, effectively
+implementing the per-sample parameter table recommended in the thesis (count=5
+at $5000\times$, count=10 at $>10,000\times$) automatically and continuously
+rather than through discrete manual tiers.
+
+\subsubsection{Target Design Failures}
+
+Non-unique anchor k-mers cause silent walking failures in \km{}: the tool
+produces output, but the output may be based on k-mers from unrelated genomic
+regions that happen to share the anchor sequence.  \kmerdet{} performs anchor
+uniqueness validation before each target is processed, flagging non-unique
+anchors with a warning and optionally extending the flank until a unique anchor
+is found.
+
+\subsubsection{Graph Construction Limitations}
+
+The fixed edge weighting scheme (0.01 for reference, 1.0 for non-reference) does
+not reflect the actual coverage difference between alleles.  A future improvement
+is coverage-weighted edges, where the edge weight is inversely proportional to
+the k-mer count: $w = 1 / \log(\text{count} + 1)$.  This would guide Dijkstra
+toward high-coverage (high-confidence) paths.  \kmerdet{}'s graph module is
+designed to support alternative weighting functions through a configurable
+weight function, but the fixed weighting remains the default for backward
+compatibility.
+
+\subsubsection{Quantification Model}
+
+The NNLS model assumes homoscedastic errors (equal variance for all k-mer counts),
+which does not hold in practice: high-count k-mers have higher absolute variance
+(following Poisson scaling).  Weighted NNLS, with weights $w_i = 1/\hat{c}_i$,
+would provide more accurate rVAF estimates by downweighting the most variable
+observations.  \kmerdet{}'s bootstrap CI computation implicitly captures some
+of this heteroscedasticity through Poisson resampling, but the point estimate
+remains unweighted for backward compatibility.
+
+\subsection{Remaining Limitations}
+\label{sec:discussion-limitations}
+
+Despite the improvements described above, several fundamental limitations remain:
+
+\textbf{Targeted-only analysis}: \kmerdet{} requires pre-designed target
+sequences and cannot perform genome-wide de novo variant discovery.  This is
+appropriate for the tumor-informed MRD monitoring use case but limits the tool's
+applicability to screening contexts where the set of variants is not known in advance.
+
+\textbf{INDEL representation instability}: Even with INDEL normalisation, the
+k-mer walking approach can produce different representations of the same INDEL
+depending on the target sequence design and the local sequence context.  Robust
+equivalence testing across different target designs remains an open problem.
+
+\textbf{No strand-bias annotation}: \jf{}'s canonical counting mode merges
+forward and reverse strand k-mers.  Strand bias is a powerful filter for
+Illumina sequencing artefacts (single-strand artefacts produce k-mers from
+only one strand).  Implementing strand-aware k-mer counting would require either
+two separate jellyfish databases (one per strand) or a custom k-mer counter,
+and is the single most impactful quality annotation missing from the current
+implementation.
+
+\textbf{Large deletions}: Deletions of $>k$~bp produce no junction k-mers that
+span the breakpoint; only the absence of reference k-mers signals the deletion.
+While the graph pathfinding can theoretically detect this absence (the reference
+path has gaps), the current implementation does not explicitly report large
+deletions.  The 2-kupl approach~\cite{pelletier2021kupl}, which detects variants
+by comparing k-mer populations between matched samples, is better suited to large
+deletion detection.
+
+\textbf{No germline distinction}: Without a matched normal sample (buffy coat),
+\kmerdet{} cannot distinguish germline heterozygous variants from somatic
+variants at similar VAF.  The PoN filter partially addresses this for common
+germline variants, but rare germline variants will be reported as somatic findings
+unless a matched normal analysis is available.
+
+\subsection{Clinical Implications}
+\label{sec:discussion-clinical}
+
+The improvements in \kmerdet{} strengthen the case for k-mer-based variant
+detection as a rapid preliminary screening tool in liquid biopsy clinical
+workflows.  The original \kam{} pipeline demonstrated that k-mer analysis
+could provide same-day preliminary results ($\sim$6 minutes) before the
+standard alignment-based pipeline completes, with 77\% SNV sensitivity.
+
+With \kmerdet{}'s projected improvements, the sensitivity gap relative to
+alignment-based callers (77\% vs.\ $\sim$90\%) narrows substantially.  For MRD
+monitoring applications where the variant panel is fixed and known from the
+primary tumour biopsy, the remaining sensitivity gap may be acceptable given
+the dramatic speed advantage.  A hybrid strategy --- k-mer preliminary
+screening followed by alignment-based confirmation of positive calls --- remains
+the clinically recommended approach:
+
+\begin{enumerate}
+  \item \textbf{Primary screen} (\kmerdet{}, $\sim$4~min): Report all variants
+    with QUAL $\geq 20$ as preliminary.
+  \item \textbf{Confirmation} (BWA + Mutect2, $\sim$1~h): Confirm positive calls
+    and resolve equivocal results.
+  \item \textbf{Longitudinal tracking} (\kmerdet{}, $<5$~min per sample):
+    Once a variant is confirmed, serial monitoring with \kmerdet{} provides
+    rapid rVAF trends.
+\end{enumerate}
+
+The bootstrap confidence intervals on rVAF are particularly valuable for
+longitudinal tracking: a 10-sample patient time series can display rVAF trends
+with uncertainty bounds, enabling early detection of the rising trend that
+precedes clinical relapse.
+
+The clinical utility of CHIP suppression via the PoN filter cannot be
+overstated: recent large-scale data suggest that $>50\%$ of cancer patients
+have at least one CHIP mutation in a reportable clinical gene~\cite{blasco2015chip},
+making CHIP filtering a prerequisite for clinical-grade reporting.
+
+\subsection{Future Work}
+\label{sec:discussion-future}
+
+Several high-impact improvements are planned for future \kmerdet{} versions:
+
+\subsubsection{UMI-Aware K-mer Counting}
+
+Current k-mer counting is at the read level: multiple PCR copies of the same
+original molecule contribute equally to k-mer counts.  A molecule-level count
+(number of distinct UMI families supporting each k-mer) would be intrinsically
+immune to PCR amplification bias.  Implementation requires either a custom
+k-mer counter that tracks UMI-to-k-mer associations or a streaming integration
+with the HUMID deduplication step.
+
+\subsubsection{In-Process Deduplication}
+
+HUMID currently runs as a separate process that writes intermediate FASTQ files
+to disk.  Integrating UMI-aware deduplication into \kmerdet{}'s preprocessing
+stage would eliminate this disk I/O, reducing the bottleneck from $\sim$2~min to
+near zero and enabling a sub-2-minute end-to-end pipeline.
+
+\subsubsection{Coverage-Weighted Pathfinding}
+
+Replacing fixed edge weights (0.01/1.0) with count-derived weights
+$w = 1/\log(\text{count} + 1)$ would guide Dijkstra toward high-confidence
+variant paths, improving pathfinding accuracy in complex regions with multiple
+competing paths.
+
+\subsubsection{Maximum Likelihood rVAF Estimation}
+
+The NNLS decomposition minimises a squared-error objective that implicitly
+assumes Gaussian noise.  A Poisson or negative binomial likelihood model would
+provide more statistically principled rVAF estimates and naturally incorporate
+heteroscedasticity (higher variance for higher counts).
+
+\subsubsection{Deep Learning Integration}
+
+A gradient-boosted classifier trained on features extracted from \kmerdet{}
+variant calls (rVAF, min\_coverage, GC content, homopolymer proximity,
+linguistic complexity, path count, coverage uniformity) could substantially
+reduce false positives without sacrificing true positive sensitivity.  The
+\texttt{linfa} Rust crate provides gradient-boosted tree implementations that
+can be trained offline and deployed as a $<1$~MB serialised model shipped with
+the binary.
+
+\subsubsection{Multi-Sample Joint Analysis}
+
+Processing multiple samples from the same patient simultaneously (longitudinal
+analysis) or from multiple patients sharing the same target panel (cohort
+analysis) enables borrowing of statistical strength across samples.  A variant
+consistently present in serial blood draws is more credible than a single-sample
+observation; a variant present in only one patient from a cohort with no history
+of the same variant is more likely to be a true somatic mutation than a
+recurrent artifact.
+
+\subsubsection{Native K-mer Counting}
+
+Replacing the \jf{} dependency with a native Rust k-mer counter would eliminate
+the last external dependency and enable UMI-aware counting as a built-in
+feature.  The counting algorithm (lock-free hash table with CAS operations) is
+well-understood and implementable in safe Rust using \texttt{dashmap} or a
+custom \texttt{AtomicU64}-based structure.

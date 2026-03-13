@@ -1,0 +1,229 @@
+% ============================================================
+\section{Background}
+\label{sec:background}
+% ============================================================
+
+\subsection{ctDNA Biology and the Liquid Biopsy Signal}
+
+When tumour cells die, they release genomic DNA fragments into the bloodstream.
+This circulating tumour DNA (\ctDNA{}) is a subset of the broader pool of
+cell-free DNA (cfDNA) shed by all cells in the body.  The physics of cfDNA
+fragmentation are informative: because cfDNA is cleaved by nucleosomal wrapping
+and endonuclease activity, it is highly fragmented, with a characteristic modal
+size of $\sim$167~bp corresponding to mono-nucleosome-protected
+DNA~\cite{mouliere2018enhanced}.  Tumour-derived cfDNA fragments tend to be
+slightly shorter than non-tumour cfDNA, with a sub-nucleosomal peak at
+$\sim$143~bp, providing an additional dimension for tumour signal enrichment.
+
+The fraction of cfDNA that is tumour-derived (\ctDNA{} fraction) varies
+enormously across clinical contexts: from $>50\%$ in patients with high
+metastatic burden to $<0.01\%$ in early-stage disease or post-treatment MRD
+monitoring.  For the most demanding MRD application, only 1 in 10,000 cfDNA
+molecules may carry the somatic mutation, meaning that at $3000\times$ sequencing
+depth, a typical targeted panel position receives fewer than 1 read from a
+mutant molecule.  Achieving reliable detection at this level requires both
+ultra-deep sequencing and sophisticated error suppression strategies.
+
+\subsubsection{Fragment Size and K-mer Analysis}
+
+The $\sim$167~bp modal fragment length has a direct impact on k-mer-based
+analysis.  For k-mers of length $k = 31$, each cfDNA fragment produces
+approximately $167 - 31 + 1 = 137$ overlapping k-mers.  A single-base variant
+located in the middle of a fragment contributes up to 31 k-mers that span the
+variant position.  At $1000\times$ sequencing depth with $0.5\%$ VAF, the
+expected count for each of these 31 k-mers is $1000 \times 0.005 = 5$.  This
+is above the minimum count threshold used in the \km{} liquid biopsy
+configuration (\texttt{--count 2}), making k-mer-based detection theoretically
+feasible at this VAF and depth.
+
+\subsubsection{Clonal Haematopoiesis as a Confounding Factor}
+
+Clonal haematopoiesis of indeterminate potential (CHIP) presents a significant
+interpretive challenge in liquid biopsy~\cite{blasco2015chip}.  As individuals
+age, haematopoietic stem cells acquire somatic mutations that confer clonal
+fitness advantages.  These CHIP clones can reach frequencies of several percent
+in the blood, and because cfDNA includes DNA shed by white blood cells, CHIP
+mutations can appear as apparent ``tumour'' variants in liquid biopsy assays.
+Common CHIP genes (DNMT3A, TET2, ASXL1, TP53) overlap substantially with solid
+tumour driver genes, making the distinction between CHIP and true tumour
+\ctDNA{} critical.  A panel-of-normals built from age-matched healthy controls
+is the most effective strategy for suppressing CHIP-derived false positives in
+cfDNA assays~\cite{blasco2015chip}.
+
+\subsection{UMI-Based Error Correction and Duplex Sequencing}
+
+The $\sim$0.1\% per-base sequencing error rate of Illumina platforms is of
+the same order of magnitude as the VAF of clinical relevance in MRD monitoring.
+Without error correction, it is impossible to distinguish a true variant present
+at 0.1\% VAF from a systematic sequencing error at the same rate.
+
+Unique molecular identifiers (UMIs) are short degenerate oligonucleotide barcodes
+attached to each DNA molecule during library preparation, before PCR amplification.
+Because UMIs are attached to the original template molecule, all PCR copies of
+that molecule share the same UMI.  After sequencing, reads sharing the same UMI
+and mapping to the same genomic location can be grouped into a \emph{UMI family}
+and their sequences compared to produce a consensus that corrects PCR and
+sequencing errors~\cite{schmitt2012detection}.
+
+\textbf{Simplex consensus} (single-strand consensus sequencing, SSCS) uses reads
+from one strand of each UMI family, achieving error rates of $\sim$10$^{-4}$.
+\textbf{Duplex consensus} (DCS) requires agreement from both strands of the same
+original DNA molecule (the ``duplex'' formed by the two complementary strands),
+achieving error rates of $\sim$10$^{-7}$~\cite{kennedy2014detecting}.  Duplex
+sequencing is the gold standard for the lowest-VAF detection but requires higher
+sequencing depth (approximately $4\text{--}6\times$ the desired depth of unique
+molecule coverage) and increases per-sample cost.
+
+The \kam{} pipeline uses HUMID~\cite{pockrandt2020humid} for UMI-based
+deduplication, collapsing UMI families to consensus reads before k-mer counting.
+This simplex-level error correction reduces the effective error rate by $10\text{--}100\times$
+compared to raw reads, enabling the \texttt{--count 2} threshold to function as
+an effective minimum-two-molecule requirement when per-family PCR duplicates are
+removed.
+
+\subsection{K-mer Counting: Jellyfish and Alternatives}
+
+\subsubsection{Jellyfish}
+
+\jf{}~\cite{marcais2011fast} is the de facto standard k-mer counter for
+bioinformatics applications.  Its key algorithmic innovation is a \emph{lock-free
+concurrent hash table} that uses CPU-level compare-and-swap (CAS) instructions
+rather than mutex locks to coordinate concurrent k-mer insertion and increment
+operations.  This enables near-linear scaling with thread count for the counting
+phase, achieving throughput of approximately $10^9$ k-mers per minute on
+multi-threaded hardware.
+
+K-mers are stored in 2-bit encoding (A$=00$, C$=01$, G$=10$, T$=11$), so a
+31-mer requires only 62 bits and fits in a single 64-bit word.  \jf{} supports
+\emph{canonical mode} (\texttt{-C}), in which each k-mer and its reverse
+complement are counted together under the lexicographically smaller representation.
+This halves memory requirements and automatically handles both strand
+orientations, which is essential for double-stranded DNA data.
+
+The \texttt{.jf} file format stores a JSON header (containing k-mer length, hash
+table size, canonical flag, and counter configuration) followed by the binary
+hash table.  K-mer queries are $O(1)$ through open-address hashing with linear
+probing.
+
+\subsubsection{Alternative Counters}
+
+KMC~2~\cite{deorowicz2015kmc2} and DSK~\cite{rizk2013dsk} are disk-based k-mer
+counters that scale to extremely large genomes by minimising RAM usage through
+external-memory sorting.  For targeted sequencing data with a relatively small
+number of distinct k-mers, \jf{}'s in-memory approach is typically faster.
+\kmerdet{}'s \texttt{KmerDatabase} trait abstracts the counting backend, allowing
+future integration of these alternatives or a native Rust counter without changes
+to the variant detection code.
+
+\subsection{K-mer Graphs in Bioinformatics}
+
+The de Bruijn graph formalism~\cite{zerbino2008velvet,bankevich2012spades} provides
+the theoretical foundation for k-mer-based sequence analysis.  In a de Bruijn
+graph, each node represents a distinct $(k-1)$-mer and each edge represents a
+k-mer overlap between adjacent nodes.  Equivalently, nodes can be k-mers
+themselves, with edges connecting k-mer pairs where the $(k-1)$-suffix of the
+source matches the $(k-1)$-prefix of the target.  De Bruijn graphs are used for
+genome assembly (SPAdes~\cite{bankevich2012spades}, Velvet~\cite{zerbino2008velvet}),
+error correction (Quake~\cite{kelley2010quake}), and variant calling
+(Cortex~\cite{iqbal2012novo}, Scalpel~\cite{narzisi2014accurate}).
+
+The \km{} algorithm builds a \emph{subgraph} of the de Bruijn graph restricted
+to k-mers discovered through DFS walking from a target region.  By weighting
+reference edges at 0.01 and non-reference edges at 1.0, Dijkstra's shortest-path
+algorithm preferentially recovers the reference path, and subsequent removal of
+reference edges exposes alternative (variant) paths.  This targeted-graph approach
+is computationally cheaper than whole-genome de Bruijn graph assembly while
+preserving the ability to detect complex rearrangements such as ITDs.
+
+\subsection{Variant Detection: Alignment-Based vs.\ K-mer-Based}
+
+\subsubsection{Alignment-Based Callers}
+
+Alignment-based somatic variant callers (Mutect2~\cite{cibulskis2013mutect},
+Strelka2~\cite{saunders2012strelka}) operate on BAM files produced by alignment
+of reads to a reference genome with BWA-MEM~\cite{li2009bwa}.  These tools
+construct probabilistic models of read counts, base qualities, mapping qualities,
+and strand orientation to compute a posterior probability or likelihood score for
+each candidate variant.  Their strengths include rich quality annotations, mature
+VCF output, and high sensitivity for SNVs ($>90\%$ at VAF $>0.1\%$).
+
+Their limitations include reference bias (reads that align poorly due to
+insertion sequences or structural variants may be filtered as multi-mappers),
+sensitivity to MAPQ filtering (particularly problematic in repetitive regions),
+and computational cost ($>30$ minutes per sample for targeted panels).
+
+\subsubsection{K-mer-Based Callers}
+
+K-mer-based callers~\cite{pelletier2021kupl,iqbal2012novo,denti2023kmerald,formenti2022merfin}
+operate without alignment and are therefore immune to reference bias and
+multi-mapping artefacts.  Cortex~\cite{iqbal2012novo} uses coloured de Bruijn
+graphs to call variants jointly across multiple samples by differencing k-mer
+populations.  The 2-kupl approach~\cite{pelletier2021kupl} detects variants by
+identifying k-mers present in a case sample but absent or depleted in a
+matched control.  \km{}~\cite{audoux2020km} combines targeted reference walking
+with graph pathfinding and NNLS quantification to support both de novo and
+tumor-informed detection.
+
+The most significant weakness of k-mer-based callers is reduced INDEL
+sensitivity: insertions of length $L \geq k$ cannot produce k-mers spanning
+the insertion junction, causing near-complete loss of signal for large INDELs
+at k$=31$.  Complex alignment-based callers that perform local graph assembly
+(GATK HaplotypeCaller, Scalpel~\cite{narzisi2014accurate}) generally outperform
+k-mer walking for INDEL detection, though the gap narrows for smaller indels
+in non-repetitive sequence.
+
+\subsection{Statistical Frameworks for Low-VAF Variant Calling}
+
+The statistical challenge of liquid biopsy variant calling can be framed as a
+hypothesis test: given observed k-mer counts, does the data provide sufficient
+evidence to reject the null hypothesis that all counts arise from sequencing
+error?
+
+\subsubsection{Binomial Model}
+
+The simplest framework models the observed variant k-mer count $c$ as drawn
+from a Binomial distribution under the null hypothesis of pure sequencing
+error~\cite{wei2011snver,koboldt2016statistical}:
+\begin{equation}
+  P(X \geq c \mid \text{H}_0) = 1 - \mathrm{BinomialCDF}(c - 1,\, D,\, \varepsilon_k)
+  \label{eq:binomial}
+\end{equation}
+where $D$ is the total k-mer coverage at the variant position and $\varepsilon_k$
+is the per-k-mer error rate (approximately $k \times \varepsilon_{\text{base}} / 3$
+for a specific single-base substitution, with $\varepsilon_{\text{base}} \approx 0.001$
+post-UMI deduplication).  The p-value from equation~\eqref{eq:binomial} is
+Phred-scaled as $Q = -10 \log_{10} p$ to produce a standard quality score.
+
+\subsubsection{Combining Evidence Across K-mers: Fisher's Method}
+
+For an SNV, up to $k = 31$ k-mer positions span the variant site, each
+producing an independent p-value.  Fisher's method~\cite{fisher1925statistical}
+combines these:
+\begin{equation}
+  X = -2 \sum_{i=1}^{m} \ln p_i \;\sim\; \chi^2_{2m}
+  \label{eq:fisher}
+\end{equation}
+where $m$ is the number of k-mer positions contributing signal.  Because
+adjacent k-mers share reads, they are not strictly independent; we use an
+effective count $m_{\text{eff}} = m \cdot k / l_{\text{read}}$ where
+$l_{\text{read}}$ is the typical read length, following the correction of
+Jennings et al.~\cite{jennings2017assessing}.
+
+\subsubsection{Negative Binomial Overdispersion}
+
+Count data from sequencing consistently exhibit overdispersion relative to the
+Poisson model, due to PCR amplification bias, GC-dependent capture efficiency,
+and coverage non-uniformity~\cite{love2014deseq2}.  The negative binomial model
+extends the Poisson by allowing variance $= \mu + \alpha\mu^2$ where $\alpha$ is
+the overdispersion parameter.  In practice, $\alpha$ is estimated from the
+reference k-mer count distribution along the target region, which should be
+approximately uniform under the null hypothesis of no variant.
+
+\subsubsection{Bootstrap Confidence Intervals on rVAF}
+
+The NNLS decomposition produces a point estimate of rVAF but no uncertainty
+bound.  A parametric bootstrap resamples k-mer counts from the estimated
+distribution (Poisson with mean equal to observed count) and re-solves the
+NNLS for each of $B = 1000$ resamples.  The 2.5th and 97.5th percentiles of the
+resulting rVAF distribution form the 95\% confidence interval, providing a
+clinically interpretable range for longitudinal VAF tracking~\cite{jennings2017assessing}.

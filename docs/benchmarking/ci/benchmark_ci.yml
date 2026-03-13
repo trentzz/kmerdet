@@ -1,0 +1,488 @@
+name: Benchmark CI
+
+# Run quick benchmarks on every PR targeting main.
+# Posts sensitivity regression table as a PR comment.
+# Full benchmark suite runs on push to main (stored as artifacts).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # Only run when source code or algorithm parameters change,
+      # not on pure documentation changes.
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "jf_wrapper/**"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_suite:
+        description: "Run full benchmark suite (slower)"
+        required: false
+        default: "false"
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Simulated dataset parameters for CI (quick, no real data needed)
+  CI_N_SNVS: 20
+  CI_N_INSERTIONS: 10
+  CI_N_DELETIONS: 10
+  CI_N_ITDS: 3
+  CI_N_ABSENT: 5
+  CI_COVERAGE: 3000
+  CI_KMER_LENGTH: 31
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build kmerdet binary
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build kmerdet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run unit tests
+        run: cargo test --release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmerdet-binary
+          path: target/release/kmerdet
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Quick accuracy benchmark on simulated data
+  # ---------------------------------------------------------------------------
+  benchmark-accuracy:
+    name: Accuracy Benchmark (simulated)
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download kmerdet binary
+        uses: actions/download-artifact@v4
+        with:
+          name: kmerdet-binary
+          path: target/release/
+
+      - name: Make binary executable
+        run: chmod +x target/release/kmerdet
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          pip install --quiet numpy pandas scipy scikit-learn matplotlib
+
+      - name: Generate simulated benchmark data
+        run: |
+          python3 docs/benchmarking/datasets/generate_simulated.py \
+            --output-dir /tmp/bench-data/snv_indel \
+            --n-snvs     ${{ env.CI_N_SNVS }} \
+            --n-insertions ${{ env.CI_N_INSERTIONS }} \
+            --n-deletions  ${{ env.CI_N_DELETIONS }} \
+            --n-itds       ${{ env.CI_N_ITDS }} \
+            --n-absent     ${{ env.CI_N_ABSENT }} \
+            --coverage     ${{ env.CI_COVERAGE }} \
+            --kmer-length  ${{ env.CI_KMER_LENGTH }} \
+            --seed 42
+
+      - name: Run kmerdet detect
+        run: |
+          mkdir -p /tmp/bench-results
+          target/release/kmerdet detect \
+            --jf /tmp/bench-data/snv_indel/mock_db.tsv \
+            --targets /tmp/bench-data/snv_indel/all_targets.fa \
+            --count 2 \
+            --ratio 0.00001 \
+            --threads 2 \
+            --format tsv \
+            --output /tmp/bench-results/detected.tsv
+
+      - name: Run kmerdet benchmark
+        run: |
+          target/release/kmerdet benchmark \
+            --results /tmp/bench-results/detected.tsv \
+            --truth /tmp/bench-data/snv_indel/ground_truth.tsv \
+            --vaf-bins "0.0,0.001,0.01,0.05,0.1,0.5,1.0" \
+            --format json \
+            --output /tmp/bench-results/benchmark.json
+
+      - name: Analyze results
+        run: |
+          python3 docs/benchmarking/framework/analyze_results.py \
+            --benchmark-json /tmp/bench-results/benchmark.json \
+            --output-dir /tmp/bench-analysis \
+            --no-summary
+
+      - name: Check for regressions
+        id: regression-check
+        run: |
+          python3 - <<'PYEOF'
+          import json, sys, pathlib
+
+          # Load current benchmark
+          with open("/tmp/bench-analysis/metrics.json") as f:
+              current = json.load(f)
+
+          # Load baseline
+          baseline_path = pathlib.Path("docs/benchmarking/results/baseline_km_thesis.json")
+          if not baseline_path.exists():
+              print("No baseline found; skipping regression check.")
+              sys.exit(0)
+
+          with open(baseline_path) as f:
+              baseline = json.load(f)
+
+          # Extract metrics
+          overall = current.get("overall", {})
+          per_type = {t["variant_type"]: t for t in current.get("per_type", [])}
+
+          current_snv_sens = per_type.get("Substitution", {}).get("sensitivity") or \
+                             overall.get("sensitivity", 0)
+          baseline_snv = baseline["accuracy"]["overall_snv_sensitivity"]
+
+          current_indel_sens = per_type.get("Insertion", {}).get("sensitivity")
+          baseline_indel = baseline["accuracy"]["overall_indel_sensitivity"]
+
+          # Regression thresholds: allow 5% relative drop before flagging
+          REGRESSION_THRESHOLD = 0.05
+
+          issues = []
+          if current_snv_sens is not None and not (current_snv_sens != current_snv_sens):
+              delta = current_snv_sens - baseline_snv
+              if delta < -REGRESSION_THRESHOLD:
+                  issues.append(
+                      f"SNV sensitivity REGRESSION: {current_snv_sens:.3f} vs baseline {baseline_snv:.3f} "
+                      f"(delta: {delta:+.3f})"
+                  )
+
+          if current_indel_sens is not None and not (current_indel_sens != current_indel_sens):
+              delta_i = current_indel_sens - baseline_indel
+              if delta_i < -REGRESSION_THRESHOLD:
+                  issues.append(
+                      f"Insertion sensitivity REGRESSION: {current_indel_sens:.3f} vs baseline "
+                      f"{baseline_indel:.3f} (delta: {delta_i:+.3f})"
+                  )
+
+          if issues:
+              print("REGRESSIONS DETECTED:")
+              for issue in issues:
+                  print(f"  - {issue}")
+              # Write regression flag for GitHub Actions
+              with open("/tmp/has_regression", "w") as f:
+                  f.write("\n".join(issues))
+              sys.exit(1)
+          else:
+              print("No regressions detected.")
+              print(f"SNV sensitivity: {current_snv_sens:.3f} (baseline: {baseline_snv:.3f})")
+              if current_indel_sens:
+                  print(f"Insertion sensitivity: {current_indel_sens:.3f} (baseline: {baseline_indel:.3f})")
+          PYEOF
+
+      - name: Generate plots
+        if: always()
+        run: |
+          python3 docs/benchmarking/framework/plot_results.py \
+            --metrics /tmp/bench-analysis/metrics.json \
+            --per-type /tmp/bench-analysis/per_type.tsv \
+            --per-vaf /tmp/bench-analysis/per_vaf_bin.tsv \
+            --output-dir /tmp/bench-figures \
+            --format png || echo "Plot generation failed (non-fatal)"
+
+      - name: Format PR comment
+        id: format-comment
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 - <<'PYEOF'
+          import json, pathlib, math
+
+          with open("/tmp/bench-analysis/metrics.json") as f:
+              current = json.load(f)
+
+          with open("docs/benchmarking/results/baseline_km_thesis.json") as f:
+              baseline = json.load(f)
+
+          overall = current.get("overall", {})
+          confusion = current.get("confusion", {})
+          per_type = {t["variant_type"]: t for t in current.get("per_type", [])}
+          per_vaf  = current.get("per_vaf_bin", [])
+
+          def fmt(v, baseline_v=None, ndigits=3):
+              if v is None or (isinstance(v, float) and math.isnan(v)):
+                  return "N/A"
+              s = f"{v:.{ndigits}f}"
+              if baseline_v is not None and not (isinstance(baseline_v, float) and math.isnan(baseline_v)):
+                  delta = v - baseline_v
+                  arrow = "▲" if delta > 0.01 else ("▼" if delta < -0.01 else "→")
+                  s += f" ({arrow}{delta:+.3f})"
+              return s
+
+          baseline_acc = baseline["accuracy"]
+
+          lines = [
+              "## Benchmark Results",
+              "",
+              "Simulated dataset: "
+              f"{${{ env.CI_N_SNVS }}} SNVs, "
+              f"{${{ env.CI_N_INSERTIONS }}} insertions, "
+              f"{${{ env.CI_N_DELETIONS }}} deletions, "
+              f"{${{ env.CI_N_ITDS }}} ITDs  |  "
+              f"coverage={${{ env.CI_COVERAGE }}}x  |  k={${{ env.CI_KMER_LENGTH }}}",
+              "",
+              "### Overall",
+              "",
+              f"| Metric | kmerdet | km Baseline |",
+              f"|--------|---------|-------------|",
+          ]
+
+          snv_s = per_type.get("Substitution", {}).get("sensitivity")
+          ins_s = per_type.get("Insertion", {}).get("sensitivity")
+          del_s = per_type.get("Deletion", {}).get("sensitivity")
+
+          lines += [
+              f"| SNV sensitivity | {fmt(snv_s, baseline_acc['overall_snv_sensitivity'])} | {baseline_acc['overall_snv_sensitivity']:.3f} |",
+              f"| Insertion sensitivity | {fmt(ins_s, baseline_acc['overall_indel_sensitivity'])} | {baseline_acc['overall_indel_sensitivity']:.3f} |",
+              f"| Deletion sensitivity | {fmt(del_s, baseline_acc['overall_indel_sensitivity'])} | {baseline_acc['overall_indel_sensitivity']:.3f} |",
+              f"| Precision | {fmt(overall.get('precision'))} | N/A |",
+              f"| F1 | {fmt(overall.get('f1'))} | N/A |",
+              f"| TP | {confusion.get('tp', 'N/A')} | — |",
+              f"| FP | {confusion.get('fp', 'N/A')} | — |",
+              f"| FN | {confusion.get('fn', confusion.get('fn_count', 'N/A'))} | — |",
+              "",
+              "### Sensitivity by VAF Bin",
+              "",
+              "| VAF Range | Sensitivity | N present |",
+              "|-----------|-------------|-----------|",
+          ]
+          for b in per_vaf:
+              if b.get("present", 0) > 0:
+                  s = b.get("sensitivity")
+                  label = b.get("bin_label", "?")
+                  lines.append(f"| {label} | {fmt(s)} | {b.get('present', '?')} |")
+
+          lines += [
+              "",
+              "_Arrow legend: ▲ = improvement vs thesis baseline, ▼ = regression, → = similar_",
+              "",
+              f"<details><summary>Full metrics JSON</summary>",
+              "",
+              "```json",
+              json.dumps({k: v for k, v in current.items() if k != "threshold_sweep"}, indent=2),
+              "```",
+              "",
+              "</details>",
+          ]
+
+          comment = "\n".join(lines)
+          # Write to file for the GitHub Actions step
+          with open("/tmp/pr_comment.md", "w") as f:
+              f.write(comment)
+          print(comment)
+          PYEOF
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark-results
+          path: /tmp/pr_comment.md
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            /tmp/bench-analysis/
+            /tmp/bench-figures/
+            /tmp/bench-results/benchmark.json
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Performance benchmark (timing only, no accuracy)
+  # ---------------------------------------------------------------------------
+  benchmark-performance:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    needs: build
+    # Only run on push to main or manual trigger to avoid slowing down PRs
+    if: >
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_suite == 'true')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download kmerdet binary
+        uses: actions/download-artifact@v4
+        with:
+          name: kmerdet-binary
+          path: target/release/
+
+      - name: Make binary executable
+        run: chmod +x target/release/kmerdet
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install hyperfine
+        run: |
+          wget -q https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine_1.18.0_amd64.deb
+          sudo dpkg -i hyperfine_1.18.0_amd64.deb
+
+      - name: Generate performance test data
+        run: |
+          pip install --quiet numpy
+          python3 docs/benchmarking/datasets/generate_simulated.py \
+            --output-dir /tmp/bench-perf \
+            --n-snvs 50 --n-insertions 25 --n-deletions 25 --n-itds 5 \
+            --n-absent 10 --coverage 3000 --seed 99
+
+      - name: Benchmark timing (hyperfine)
+        run: |
+          mkdir -p /tmp/perf-results
+          hyperfine \
+            --runs 3 \
+            --warmup 1 \
+            --export-json /tmp/perf-results/hyperfine.json \
+            "target/release/kmerdet detect \
+               --jf /tmp/bench-perf/mock_db.tsv \
+               --targets /tmp/bench-perf/all_targets.fa \
+               --count 2 --ratio 0.00001 --threads 4 \
+               --format tsv --output /tmp/perf-results/out.tsv"
+
+          # Display results
+          python3 - <<'PYEOF'
+          import json
+          with open("/tmp/perf-results/hyperfine.json") as f:
+              d = json.load(f)
+          r = d["results"][0]
+          print(f"detect (115 targets, 4 threads):")
+          print(f"  median:   {r['median']:.2f} s")
+          print(f"  min:      {r['min']:.2f} s")
+          print(f"  max:      {r['max']:.2f} s")
+          print(f"  stddev:   {r['stddev']:.2f} s")
+          thesis_detect = 120  # km detect on 50 targets; scaled for 115: ~276 s
+          throughput = 115 / r['median']
+          print(f"  throughput: {throughput:.1f} targets/s")
+          PYEOF
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results-${{ github.sha }}
+          path: /tmp/perf-results/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Store baseline on main push (for future regression comparison)
+  # ---------------------------------------------------------------------------
+  store-baseline:
+    name: Store Results Baseline
+    runs-on: ubuntu-latest
+    needs: [benchmark-accuracy]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download benchmark artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: /tmp/bench-artifacts/
+
+      - name: Determine version tag
+        id: version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); \
+            print(next(p['version'] for p in d['packages'] if p['name'] == 'kmerdet'))")
+          DATE=$(date +%Y%m%d)
+          HASH=$(git rev-parse --short HEAD)
+          echo "tag=${DATE}-v${VERSION}-${HASH}" >> "$GITHUB_OUTPUT"
+          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Copy metrics to results directory
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          DEST="docs/benchmarking/results/${TAG}"
+          mkdir -p "$DEST"
+
+          # Copy compact summary files only (not large TSVs)
+          cp -f /tmp/bench-artifacts/metrics.json "$DEST/" || true
+          cp -f /tmp/bench-artifacts/per_type.tsv "$DEST/" || true
+          cp -f /tmp/bench-artifacts/performance.tsv "$DEST/" || true
+
+          # Update run metadata with CI context
+          python3 - <<PYEOF
+          import json, pathlib
+          path = pathlib.Path("$DEST/run_metadata.json")
+          meta = {}
+          if path.exists():
+              with open(path) as f:
+                  meta = json.load(f)
+          meta.update({
+              "ci_run": True,
+              "github_sha": "${{ github.sha }}",
+              "github_ref": "${{ github.ref }}",
+              "version_tag": "$TAG",
+              "kmerdet_version": "${{ steps.version.outputs.version }}",
+          })
+          with open(path, "w") as f:
+              json.dump(meta, f, indent=2)
+          PYEOF
+
+          echo "Stored results in: $DEST"
+
+      - name: Commit results
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "docs/benchmarking/results/"
+          git diff --cached --quiet || git commit -m \
+            "ci: store benchmark results for ${TAG}
+
+            Automated benchmark run on push to main.
+            Dataset: simulated_snv_indel (quick suite)
+            Trigger: \${{ github.sha }}"
+          git push || echo "Push failed; results remain as artifact."
