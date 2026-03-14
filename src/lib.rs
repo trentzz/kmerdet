@@ -7,6 +7,7 @@ pub mod graph;
 pub mod jellyfish;
 pub mod kmer;
 pub mod output;
+pub mod report;
 pub mod sequence;
 pub mod trace;
 pub mod variant;

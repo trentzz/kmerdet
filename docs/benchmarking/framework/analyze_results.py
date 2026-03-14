@@ -50,6 +50,16 @@ DEFAULT_VAF_BINS = [
     (0.05,   1.0,    "5–100%"),
 ]
 
+ULTRA_FINE_VAF_BINS = [
+    (0.0,       0.000001, "0–0.0001%"),
+    (0.000001,  0.00001,  "0.0001–0.001%"),
+    (0.00001,   0.0001,   "0.001–0.01%"),
+    (0.0001,    0.001,    "0.01–0.1%"),
+    (0.001,     0.01,     "0.1–1%"),
+    (0.01,      0.05,     "1–5%"),
+    (0.05,      1.0,      "5–100%"),
+]
+
 VARIANT_TYPE_ORDER = [
     "Substitution", "Insertion", "Deletion", "ITD", "Complex",
 ]
@@ -355,6 +365,68 @@ def compute_per_variant(truth_matched: pd.DataFrame, fps: pd.DataFrame) -> pd.Da
     return result
 
 
+def compute_lod(
+    per_vaf_df: pd.DataFrame,
+    target_sensitivities: list[float] = [0.5, 0.8],
+) -> dict:
+    """Interpolate the sensitivity curve to find LOD (Limit of Detection).
+
+    For each target sensitivity (e.g. 50%, 80%), finds the VAF at which the
+    sensitivity curve crosses that threshold by linear interpolation between
+    VAF bin midpoints.
+
+    Args:
+        per_vaf_df: DataFrame from compute_per_vaf_bin with columns
+            vaf_low, vaf_high, sensitivity, present.
+        target_sensitivities: List of sensitivity thresholds to find LOD for.
+
+    Returns:
+        Dict with keys like 'lod50', 'lod80' mapping to the interpolated VAF,
+        or None if the threshold is never crossed.
+    """
+    if per_vaf_df.empty:
+        return {f"lod{int(t*100)}": None for t in target_sensitivities}
+
+    # Filter bins with actual data and compute midpoints
+    valid = per_vaf_df[per_vaf_df["present"] > 0].copy()
+    if valid.empty:
+        return {f"lod{int(t*100)}": None for t in target_sensitivities}
+
+    valid = valid.sort_values("vaf_low")
+    midpoints = ((valid["vaf_low"] + valid["vaf_high"]) / 2).values
+    sensitivities = valid["sensitivity"].values
+
+    result = {}
+    for target in target_sensitivities:
+        key = f"lod{int(target * 100)}"
+        lod_val = None
+
+        # Walk from low VAF to high VAF; find first crossing of the target
+        for i in range(len(sensitivities) - 1):
+            s_low = sensitivities[i]
+            s_high = sensitivities[i + 1]
+
+            # Check if this segment crosses the target (low->high or high->low)
+            if (math.isnan(s_low) or math.isnan(s_high)):
+                continue
+
+            # We want the VAF where sensitivity first reaches the target
+            # going from low VAF (harder) to high VAF (easier)
+            if s_low < target <= s_high:
+                # Linear interpolation
+                frac = (target - s_low) / (s_high - s_low) if s_high != s_low else 0.0
+                lod_val = midpoints[i] + frac * (midpoints[i + 1] - midpoints[i])
+                break
+            elif s_low >= target:
+                # Already above target at this bin — LOD is at or below this midpoint
+                lod_val = midpoints[i]
+                break
+
+        result[key] = lod_val
+
+    return result
+
+
 def compute_threshold_sweep(
     calls: pd.DataFrame,
     truth: pd.DataFrame,
@@ -606,6 +678,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress printed summary table.",
     )
+    p.add_argument(
+        "--ultra-fine",
+        action="store_true",
+        help="Use ultra-fine VAF bins for sensitivity-first analysis "
+             "(extends into sub-0.1%% regime).",
+    )
 
     return p
 
@@ -629,6 +707,8 @@ def main(argv: Optional[list[str]] = None) -> int:
              f"{boundaries[i]*100:.3g}–{boundaries[i+1]*100:.3g}%")
             for i in range(len(boundaries) - 1)
         ]
+    elif args.ultra_fine:
+        custom_bins = ULTRA_FINE_VAF_BINS
     else:
         custom_bins = DEFAULT_VAF_BINS
 
@@ -753,6 +833,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         print("ERROR: provide --results-dir, --detected, or --benchmark-json", file=sys.stderr)
         return 1
+
+    # ------- LOD computation -------
+    if not per_vaf_df.empty:
+        lod_metrics = compute_lod(per_vaf_df)
+        all_metrics["lod"] = lod_metrics
+        lod_strs = []
+        for key, val in lod_metrics.items():
+            if val is not None:
+                lod_strs.append(f"{key}={val:.6f}")
+            else:
+                lod_strs.append(f"{key}=N/A")
+        print(f"LOD metrics: {', '.join(lod_strs)}")
 
     # ------- Performance analysis -------
     if not timing_df.empty:

@@ -110,6 +110,14 @@ pub struct DetectArgs {
     /// specificity. Results are merged using weighted consensus voting.
     #[arg(long, value_delimiter = ',', num_args = 1..)]
     pub multi_k: Option<Vec<u8>>,
+
+    /// Write diagnostic report to this directory.
+    #[arg(long, value_name = "DIR")]
+    pub report_dir: Option<PathBuf>,
+
+    /// Diagnostic report verbosity level [default: summary]
+    #[arg(long, value_enum, default_value = "summary")]
+    pub report_level: crate::report::ReportLevel,
 }
 
 /// Open a jellyfish database using the pure Rust reader.
@@ -545,6 +553,8 @@ pub fn run(
 
 /// Run detection at a single k-mer length (the default mode).
 fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
+    let pipeline_start = std::time::Instant::now();
+
     // 1. Open jellyfish database.
     let db = open_db(&args.db)?;
     let db_name = sample_name(&args.db);
@@ -555,6 +565,7 @@ fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
 
     // 3. Load all target FASTA files.
     let targets = load_all_targets(&args.targets)?;
+    let n_targets = targets.len();
 
     // 4. Build walker configuration from args.
     let walker_config = build_walker_config(&args, db.as_ref(), &targets, k)?;
@@ -577,7 +588,25 @@ fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         prune_config.as_ref(),
     )?;
 
-    // 6. Write output.
+    // 6. Write diagnostic report if --report-dir is set.
+    if let Some(ref report_dir) = args.report_dir {
+        let total_time_ms = pipeline_start.elapsed().as_millis() as u64;
+        if let Err(e) = write_report(
+            report_dir,
+            args.report_level,
+            &all_calls,
+            n_targets,
+            total_time_ms,
+            k,
+            &args,
+        ) {
+            tracing::warn!("failed to write diagnostic report: {}", e);
+        } else {
+            tracing::info!("wrote diagnostic report to {}", report_dir.display());
+        }
+    }
+
+    // 7. Write output.
     write_output(&all_calls, global)?;
 
     Ok(())
@@ -979,4 +1008,174 @@ fn write_output(all_calls: &[VariantCall], global: &super::GlobalOptions) -> Res
         }
     }
     Ok(())
+}
+
+/// Write diagnostic report from detection results.
+fn write_report(
+    report_dir: &std::path::Path,
+    report_level: crate::report::ReportLevel,
+    all_calls: &[VariantCall],
+    n_targets: usize,
+    total_time_ms: u64,
+    k: u8,
+    args: &DetectArgs,
+) -> Result<()> {
+    use crate::report::*;
+
+    let writer = ReportWriter::new(report_dir.to_path_buf(), report_level)?;
+
+    // Group calls by target to build per-target summaries.
+    let mut calls_by_target: indexmap::IndexMap<String, Vec<&VariantCall>> =
+        indexmap::IndexMap::new();
+    for call in all_calls {
+        calls_by_target
+            .entry(call.target.clone())
+            .or_default()
+            .push(call);
+    }
+
+    // Count how many targets failed (processed but produced no calls at all).
+    // This is an approximation: targets that failed in process_target are not in all_calls.
+    let targets_with_calls = calls_by_target.len();
+    let targets_failed = n_targets.saturating_sub(targets_with_calls);
+
+    // Build detection summary entries and count stats.
+    let mut summary_entries: Vec<DetectionSummaryEntry> = Vec::new();
+    let mut total_variants = 0usize;
+    let mut targets_with_variants = 0usize;
+    let mut targets_reference_only = 0usize;
+
+    for (target_name, calls) in &calls_by_target {
+        let variant_calls: Vec<&&VariantCall> = calls
+            .iter()
+            .filter(|c| c.variant_type != VariantType::Reference)
+            .collect();
+        let n_variants = variant_calls.len();
+        total_variants += n_variants;
+
+        // Determine result type: use the first non-reference variant type, or "Reference".
+        let result_type = if let Some(vc) = variant_calls.first() {
+            vc.variant_type.to_string()
+        } else {
+            "Reference".to_string()
+        };
+
+        // Best rVAF among variant calls (or 1.0 for ref-only).
+        let rvaf = variant_calls
+            .iter()
+            .map(|c| c.rvaf)
+            .reduce(f64::max)
+            .unwrap_or(1.0);
+
+        // Coverage from the reference call or the first call.
+        let coverage = calls.first().map(|c| c.min_coverage).unwrap_or(0);
+
+        // n_paths = total calls for this target (ref + alt).
+        let n_paths = calls.len();
+
+        if n_variants > 0 {
+            targets_with_variants += 1;
+        } else {
+            targets_reference_only += 1;
+        }
+
+        summary_entries.push(DetectionSummaryEntry {
+            target: target_name.clone(),
+            result_type: result_type.clone(),
+            rvaf,
+            coverage,
+            n_paths,
+            n_variants,
+        });
+
+        // Write per-target result at standard+ level.
+        if report_level >= ReportLevel::Standard {
+            let variants: Vec<TargetVariant> = variant_calls
+                .iter()
+                .map(|c| TargetVariant {
+                    variant_type: c.variant_type.to_string(),
+                    variant_name: c.variant_name.clone(),
+                    rvaf: c.rvaf,
+                    min_coverage: c.min_coverage,
+                    ref_allele: c.ref_allele.clone().unwrap_or_default(),
+                    alt_allele: c.alt_allele.clone().unwrap_or_default(),
+                })
+                .collect();
+
+            let decision_text = build_decision_text(&result_type, &variant_calls);
+
+            let target_result = TargetResult {
+                target: target_name.clone(),
+                result_type,
+                variants,
+                // These fields require data from the walker/graph internals that we
+                // don't have at this level. Set to 0 for now; a follow-up will hook
+                // into the walker and graph modules to populate them.
+                n_ref_kmers: 0,
+                n_walked_kmers: 0,
+                n_graph_nodes: 0,
+                n_paths,
+                decision_text,
+            };
+
+            writer.write_target_result(target_name, &target_result)?;
+        }
+    }
+
+    // Write run summary (always written).
+    let run_summary = RunSummary {
+        targets_processed: n_targets,
+        variants_found: total_variants,
+        targets_with_variants,
+        targets_reference_only,
+        targets_failed,
+        total_time_ms,
+        parameters: RunParameters {
+            kmer_length: k,
+            count: args.count,
+            ratio: args.ratio,
+            adaptive: args.adaptive,
+            bidirectional: args.bidirectional,
+            prune_enabled: !args.no_prune,
+        },
+    };
+    writer.write_run_summary(&run_summary)?;
+
+    // Write detection summary TSV (always written).
+    writer.write_detection_summary(&summary_entries)?;
+
+    Ok(())
+}
+
+/// Build a human-readable decision text for a target.
+fn build_decision_text(result_type: &str, variant_calls: &[&&VariantCall]) -> String {
+    if variant_calls.is_empty() {
+        return "Reference only -- no variant branches found".to_string();
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for vc in variant_calls {
+        let pos_info = if let Some(pos) = vc.pos {
+            format!(" at pos {}", pos)
+        } else if !vc.variant_name.is_empty() {
+            format!(" {}", vc.variant_name)
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "Detected {}{}, rVAF={:.4}, coverage={}",
+            vc.variant_type, pos_info, vc.rvaf, vc.min_coverage
+        ));
+    }
+
+    if lines.len() == 1 {
+        lines.into_iter().next().unwrap()
+    } else {
+        format!(
+            "Multiple variants detected ({} {}):\n{}",
+            variant_calls.len(),
+            result_type,
+            lines.join("\n")
+        )
+    }
 }

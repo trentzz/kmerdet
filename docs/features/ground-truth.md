@@ -10,7 +10,16 @@ Researchers need to evaluate detection accuracy against validated truth sets:
 - Synthetic spike-in experiments with known variants at known VAFs
 - Cell-line dilution series with characterized mutations
 - Clinical samples with orthogonal validation (e.g., ddPCR confirmed)
-- Benchmarking against km/kmtools for regression testing
+- Gold-standard alignment workflow results (BWA-MEM2 + GATK/Mutect2)
+
+**Important: km output is NOT ground truth.** kmerdet is designed to exceed km's
+detection capabilities. Variants detected by kmerdet but not by km are not
+automatically false positives — they may represent genuine sensitivity improvements.
+km comparison is useful for concordance analysis and regression testing, but
+correctness must be evaluated against independent ground truth.
+
+See `docs/features/correctness-and-sensitivity.md` for the full correctness and
+configurable sensitivity framework.
 
 The ground truth is fundamentally different from the expected variants file:
 - **Expected variants** = "look for these specific variants" (drives filtering)

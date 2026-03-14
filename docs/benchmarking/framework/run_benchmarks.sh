@@ -22,6 +22,8 @@
 #   --no-comparison        Skip km vs kmerdet comparison
 #   --vaf-bins LIST        Comma-separated VAF bin boundaries
 #   --sweep-vaf LIST       Comma-separated VAF thresholds for ROC sweep
+#   --sensitivity-focus    Run sensitivity-first presets with ultra-fine bins
+#                          and ultra-sensitive parameters (count=1, ratio=0.000001)
 #   -h, --help             Show this message and exit
 #
 # Examples:
@@ -52,6 +54,7 @@ QUICK=false
 ACCURACY_ONLY=false
 PERF_ONLY=false
 NO_COMPARISON=false
+SENSITIVITY_FOCUS=false
 DATA_DIR=""
 SELECTED_DATASETS=()
 
@@ -71,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --accuracy-only) ACCURACY_ONLY=true; shift ;;
         --perf-only)     PERF_ONLY=true; shift ;;
         --no-comparison) NO_COMPARISON=true; shift ;;
+        --sensitivity-focus) SENSITIVITY_FOCUS=true; shift ;;
         --vaf-bins)      VAF_BINS="$2"; shift 2 ;;
         --sweep-vaf)     SWEEP_VAF="$2"; shift 2 ;;
         -h|--help)
@@ -83,6 +87,21 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ---------------------------------------------------------------------------
+# Sensitivity-focus mode overrides
+# ---------------------------------------------------------------------------
+if [[ "$SENSITIVITY_FOCUS" == "true" ]]; then
+    VAF_BINS="0.0,0.000001,0.00001,0.0001,0.001,0.01,0.1,0.5,1.0"
+    # If no datasets were explicitly selected, default to sensitivity presets
+    if [[ ${#SELECTED_DATASETS[@]} -eq 0 ]]; then
+        SELECTED_DATASETS=(
+            vaf_titration_standard
+            vaf_titration_ultra_low
+            vaf_titration_extreme
+        )
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Utility functions
@@ -416,7 +435,12 @@ run_simulated_dataset() {
     fi
 
     if [[ "$PERF_ONLY" != "true" ]]; then
-        run_accuracy_benchmark "$name" "$jf_db" "$targets" "$truth_tsv"
+        if [[ "$SENSITIVITY_FOCUS" == "true" ]]; then
+            # Use ultra-sensitive parameters for sensitivity-first mode
+            run_accuracy_benchmark "$name" "$jf_db" "$targets" "$truth_tsv" "1" "0.000001"
+        else
+            run_accuracy_benchmark "$name" "$jf_db" "$targets" "$truth_tsv"
+        fi
 
         if [[ "$QUICK" != "true" ]]; then
             # Additional accuracy runs: vary count and ratio
@@ -428,6 +452,13 @@ run_simulated_dataset() {
                         "$count" "$ratio"
                 done
             done
+            if [[ "$SENSITIVITY_FOCUS" == "true" ]]; then
+                # Also run with count=1 ratio=0.000001 in sweep
+                run_accuracy_benchmark \
+                    "${name}_c1_r0p000001" \
+                    "$jf_db" "$targets" "$truth_tsv" \
+                    "1" "0.000001"
+            fi
         fi
     fi
 
@@ -458,6 +489,14 @@ run_dataset() {
         fi
     fi
 
+    # Determine count and ratio based on sensitivity-focus mode
+    local sf_count="2"
+    local sf_ratio="0.00001"
+    if [[ "$SENSITIVITY_FOCUS" == "true" ]]; then
+        sf_count="1"
+        sf_ratio="0.000001"
+    fi
+
     case "$name" in
         simulated_snv_indel)
             local dd="${DATA_DIR:-data/simulated/snv_indel}"
@@ -469,6 +508,51 @@ run_dataset() {
             ;;
         simulated_ultra_low_vaf)
             local dd="${DATA_DIR:-data/simulated/ultra_low_vaf}"
+            run_simulated_dataset "$name" "$dd" "${dd}/ground_truth.tsv"
+            ;;
+        vaf_titration_standard)
+            local dd="${DATA_DIR:-data/benchmark/vaf_titration_standard}"
+            run_simulated_dataset "$name" "$dd" "${dd}/ground_truth.tsv"
+            ;;
+        vaf_titration_ultra_low)
+            local dd="${DATA_DIR:-data/benchmark/vaf_titration_ultra_low}"
+            run_simulated_dataset "$name" "$dd" "${dd}/ground_truth.tsv"
+            ;;
+        vaf_titration_extreme)
+            local dd="${DATA_DIR:-data/benchmark/vaf_titration_extreme_100000x}"
+            run_simulated_dataset "$name" "$dd" "${dd}/ground_truth.tsv"
+            # Also run at 500000x if available
+            local dd2="${DATA_DIR:-data/benchmark/vaf_titration_extreme_500000x}"
+            if [[ -d "$dd2" ]]; then
+                run_simulated_dataset "${name}_500000x" "$dd2" "${dd2}/ground_truth.tsv"
+            fi
+            ;;
+        coverage_vaf_matrix)
+            # Run across all coverage levels
+            for depth in 1000 3000 10000 50000 100000; do
+                local dd="${DATA_DIR:-data/benchmark/coverage_vaf_matrix_${depth}x}"
+                if [[ -d "$dd" ]]; then
+                    run_simulated_dataset "${name}_${depth}x" "$dd" "${dd}/ground_truth.tsv"
+                else
+                    warn "Coverage-VAF matrix dataset not found: $dd"
+                fi
+            done
+            ;;
+        indel_size_sensitivity)
+            # Run across all INDEL sizes and k values
+            for size in 1 2 3 5 7 10 15 20 30 50; do
+                for k in 21 31; do
+                    local dd="${DATA_DIR:-data/benchmark/indel_size_sensitivity_size${size}_k${k}}"
+                    if [[ -d "$dd" ]]; then
+                        run_simulated_dataset "${name}_s${size}_k${k}" "$dd" "${dd}/ground_truth.tsv"
+                    else
+                        warn "INDEL size dataset not found: $dd"
+                    fi
+                done
+            done
+            ;;
+        parameter_sensitivity)
+            local dd="${DATA_DIR:-data/benchmark/parameter_sensitivity}"
             run_simulated_dataset "$name" "$dd" "${dd}/ground_truth.tsv"
             ;;
         *)
@@ -488,9 +572,113 @@ if [[ ${#SELECTED_DATASETS[@]} -gt 0 ]]; then
     done
 else
     # Default: run all built-in simulated datasets
-    for name in simulated_snv_indel simulated_large_indels simulated_ultra_low_vaf; do
+    for name in simulated_snv_indel simulated_large_indels simulated_ultra_low_vaf \
+                vaf_titration_standard vaf_titration_ultra_low vaf_titration_extreme \
+                coverage_vaf_matrix indel_size_sensitivity parameter_sensitivity; do
         run_dataset "$name"
     done
+fi
+
+# ---------------------------------------------------------------------------
+# km comparison (if enabled)
+# ---------------------------------------------------------------------------
+if [[ "$NO_COMPARISON" != "true" ]] && command -v "$KM" &>/dev/null; then
+    info "km binary found: running km vs kmerdet comparison"
+
+    # Run comparison for each dataset that was benchmarked
+    for name in simulated_snv_indel simulated_large_indels simulated_ultra_low_vaf \
+                vaf_titration_standard vaf_titration_ultra_low vaf_titration_extreme \
+                coverage_vaf_matrix indel_size_sensitivity parameter_sensitivity; do
+        # Check if this dataset was selected and ran
+        if [[ ${#SELECTED_DATASETS[@]} -gt 0 ]]; then
+            found=false
+            for sel in "${SELECTED_DATASETS[@]}"; do
+                if [[ "$sel" == "$name" ]]; then found=true; break; fi
+            done
+            [[ "$found" != "true" ]] && continue
+        fi
+
+        # Resolve dataset paths
+        case "$name" in
+            simulated_snv_indel)       dd="${DATA_DIR:-data/simulated/snv_indel}" ;;
+            simulated_large_indels)    dd="${DATA_DIR:-data/simulated/large_indels}" ;;
+            simulated_ultra_low_vaf)   dd="${DATA_DIR:-data/simulated/ultra_low_vaf}" ;;
+            vaf_titration_standard)    dd="${DATA_DIR:-data/benchmark/vaf_titration_standard}" ;;
+            vaf_titration_ultra_low)   dd="${DATA_DIR:-data/benchmark/vaf_titration_ultra_low}" ;;
+            vaf_titration_extreme)     dd="${DATA_DIR:-data/benchmark/vaf_titration_extreme_100000x}" ;;
+            coverage_vaf_matrix)       dd="${DATA_DIR:-data/benchmark/coverage_vaf_matrix_3000x}" ;;
+            indel_size_sensitivity)    dd="${DATA_DIR:-data/benchmark/indel_size_sensitivity_size1_k21}" ;;
+            parameter_sensitivity)     dd="${DATA_DIR:-data/benchmark/parameter_sensitivity}" ;;
+            *) continue ;;
+        esac
+
+        [[ ! -d "$dd" ]] && continue
+
+        # Find database
+        jf_db=""
+        if [[ -f "${dd}/database.jf" ]]; then
+            jf_db="${dd}/database.jf"
+        elif [[ -f "${dd}/mock_db.tsv" ]]; then
+            # km cannot read mock TSVs — skip
+            info "Skipping km comparison for $name: no .jf database (only mock_db.tsv)"
+            continue
+        fi
+        [[ -z "$jf_db" ]] && continue
+
+        # Find targets
+        targets=""
+        [[ -d "${dd}/targets" ]] && targets="${dd}/targets"
+        [[ -f "${dd}/targets.fa" ]] && targets="${dd}/targets.fa"
+        [[ -z "$targets" ]] && continue
+
+        truth="${dd}/ground_truth.tsv"
+        [[ ! -f "$truth" ]] && continue
+
+        info "Running km vs kmerdet comparison on: $name"
+        bash "${SCRIPT_DIR}/compare_km_kmerdet.sh" \
+            --db "$jf_db" \
+            --targets "$targets" \
+            --truth "$truth" \
+            --output-dir "${OUTPUT_DIR}/comparison/${name}" \
+            --kmerdet "$KMERDET" \
+            --km "$KM" \
+            --threads "$THREADS" \
+            --param-sweep \
+            2>"${OUTPUT_DIR}/logs/comparison_${name}.log" \
+            || warn "Comparison failed for $name — see ${OUTPUT_DIR}/logs/comparison_${name}.log"
+    done
+elif [[ "$NO_COMPARISON" != "true" ]]; then
+    info "km binary not found ($KM) — skipping km comparison"
+    info "Install km: pip install km-walk"
+fi
+
+# ---------------------------------------------------------------------------
+# Sensitivity-focus post-processing
+# ---------------------------------------------------------------------------
+if [[ "$SENSITIVITY_FOCUS" == "true" ]] && [[ "$DATASETS_RAN" -gt 0 ]]; then
+    info "Running sensitivity-focused analysis..."
+
+    # Run analyze_results.py with --ultra-fine flag
+    if [[ -d "${OUTPUT_DIR}/accuracy" ]]; then
+        python3 "${SCRIPT_DIR}/analyze_results.py" \
+            --results-dir "$OUTPUT_DIR" \
+            --output-dir "${OUTPUT_DIR}/analysis" \
+            --ultra-fine \
+            2>"${OUTPUT_DIR}/logs/analyze_ultra_fine.log" \
+            || warn "analyze_results.py --ultra-fine failed — see ${OUTPUT_DIR}/logs/analyze_ultra_fine.log"
+    fi
+
+    # Generate sensitivity-focused plots
+    if [[ -d "${OUTPUT_DIR}/analysis" ]]; then
+        info "Generating sensitivity-focused plots..."
+        python3 "${SCRIPT_DIR}/plot_results.py" \
+            --results-dir "${OUTPUT_DIR}/analysis" \
+            --output-dir "${OUTPUT_DIR}/figures" \
+            --sensitivity-curve \
+            --lod \
+            2>"${OUTPUT_DIR}/logs/plot_sensitivity.log" \
+            || warn "plot_results.py sensitivity plots failed — see ${OUTPUT_DIR}/logs/plot_sensitivity.log"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

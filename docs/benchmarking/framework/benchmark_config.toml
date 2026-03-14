@@ -38,9 +38,12 @@ use_hyperfine = true
 # Output format for kmerdet results ("tsv" or "json").
 output_format = "tsv"
 
-# VAF bin boundaries used for per-bin sensitivity breakdown.
-# These are the standard bins for liquid biopsy MRD monitoring.
-vaf_bins = [0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
+# VAF bin boundaries used for per-bin sensitivity breakdown (ultra-fine).
+# Extends into the sub-0.1% regime for sensitivity-first analysis.
+vaf_bins = [0.0, 0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 0.5, 1.0]
+
+# Standard bins for backward compatibility with thesis analysis.
+vaf_bins_standard = [0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
 
 # VAF threshold sweep values for ROC-like sensitivity/specificity curves.
 # At each threshold, calls with rVAF < threshold are excluded.
@@ -147,6 +150,82 @@ targets_dir = "data/real/dilution_series/targets/"
 truth_tsv = "data/real/dilution_series/ground_truth.tsv"
 dilution_fractions = [0.10, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005]
 
+# --- Sensitivity-first benchmark datasets ---
+
+[[dataset]]
+name = "vaf_titration_standard"
+description = """
+Baseline sensitivity curve: 160 variants (10 SNV + 5 ins + 5 del per level)
+across 8 VAF levels from 0.05% to 10%. Coverage 3000x.
+"""
+type = "simulated"
+enabled = true
+data_dir = "data/benchmark/vaf_titration_standard"
+truth_tsv = "data/benchmark/vaf_titration_standard/ground_truth.tsv"
+kmer_length = 31
+
+[[dataset]]
+name = "vaf_titration_ultra_low"
+description = """
+Ultra-low VAF frontier: 280 variants (20 SNV + 10 ins + 10 del per level)
+across 7 VAF levels from 0.0001% to 0.1%. Coverage 50000x.
+"""
+type = "simulated"
+enabled = true
+data_dir = "data/benchmark/vaf_titration_ultra_low"
+truth_tsv = "data/benchmark/vaf_titration_ultra_low/ground_truth.tsv"
+kmer_length = 31
+
+[[dataset]]
+name = "vaf_titration_extreme"
+description = """
+Extreme VAF regime: 300 variants (50 SNV + 25 ins + 25 del per level)
+at 0.001%/0.0005%/0.0001% VAF. Generated at 100000x and 500000x.
+"""
+type = "simulated"
+enabled = true
+data_dir = "data/benchmark/vaf_titration_extreme_100000x"
+truth_tsv = "data/benchmark/vaf_titration_extreme_100000x/ground_truth.tsv"
+kmer_length = 31
+
+[[dataset]]
+name = "coverage_vaf_matrix"
+description = """
+Coverage x VAF interaction matrix: 600 variants (20 SNV + 10 ins + 10 del)
+at 4 VAF levels (0.1%/0.01%/0.001%/0.0001%) across 5 coverage depths
+(1000x/3000x/10000x/50000x/100000x).
+"""
+type = "simulated"
+enabled = true
+data_dir = "data/benchmark/coverage_vaf_matrix_3000x"
+truth_tsv = "data/benchmark/coverage_vaf_matrix_3000x/ground_truth.tsv"
+kmer_length = 31
+
+[[dataset]]
+name = "indel_size_sensitivity"
+description = """
+INDEL size vs detection sensitivity: 800 variants (10 ins + 10 del per size)
+at 10 INDEL sizes (1-50bp), 2 VAF levels (1%/0.1%), and 2 k-mer lengths
+(k=21/k=31). Coverage 3000x.
+"""
+type = "simulated"
+enabled = true
+data_dir = "data/benchmark/indel_size_sensitivity_size1_k21"
+truth_tsv = "data/benchmark/indel_size_sensitivity_size1_k21/ground_truth.tsv"
+kmer_length = 21
+
+[[dataset]]
+name = "parameter_sensitivity"
+description = """
+Threshold optimization dataset: 100 variants (50 SNV + 25 ins + 25 del)
+at fixed 0.05% VAF. Coverage 10000x. Used to sweep count/ratio parameters.
+"""
+type = "simulated"
+enabled = true
+data_dir = "data/benchmark/parameter_sensitivity"
+truth_tsv = "data/benchmark/parameter_sensitivity/ground_truth.tsv"
+kmer_length = 31
+
 
 # ---------------------------------------------------------------------------
 # Parameter sweep configurations
@@ -190,6 +269,15 @@ kmer_lengths = [[21, 31]]   # list of lists: each inner list is one multi-k run
 count = [2]
 ratio = [0.00001]
 
+[param_sweep.ultra_sensitive]
+description = """
+Ultra-sensitive parameters for sensitivity-first benchmarking.
+count=1 accepts single-observation k-mers; ratio=0.000001 lowers the
+extension threshold to detect variants at extremely low VAF.
+"""
+count = [1]
+ratio = [0.000001]
+
 
 # ---------------------------------------------------------------------------
 # Performance benchmark settings
@@ -218,6 +306,48 @@ warmup_runs = 1
 # this on the 50-target simulated dataset, the CI benchmark will flag it
 # as a regression.
 min_throughput_targets_per_sec = 0.5
+
+
+# ---------------------------------------------------------------------------
+# km vs kmerdet comparison settings
+# ---------------------------------------------------------------------------
+
+[comparison]
+
+# Enable head-to-head km comparison when running benchmarks.
+# Requires km binary to be available (see global.km_binary).
+enabled = false
+
+# Path to km binary. Set to the installed km command.
+# km is the Python k-mer variant detection tool this project reimplements.
+km_binary = "km"
+
+# Parameter sets for comparison runs.
+# Each set runs both km and kmerdet with identical parameters.
+# Format: list of {count, ratio} tables.
+[[comparison.param_sets]]
+label = "liquid_biopsy_default"
+count = 2
+ratio = 0.05
+
+[[comparison.param_sets]]
+label = "sensitive"
+count = 2
+ratio = 0.00001
+
+[[comparison.param_sets]]
+label = "conservative"
+count = 5
+ratio = 0.05
+
+# Whether to run McNemar's test for statistical significance.
+run_mcnemar = true
+
+# Whether to generate the comparison report markdown.
+generate_report = true
+
+# Whether to generate comparison plots (requires matplotlib).
+generate_plots = true
 
 
 # ---------------------------------------------------------------------------

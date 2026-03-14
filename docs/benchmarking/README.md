@@ -6,6 +6,40 @@ preparation tools, and templates for writing up comparisons.
 
 ---
 
+## Benchmarking Philosophy
+
+### km Is Not Ground Truth
+
+kmerdet is designed to **exceed** km's detection capabilities, not merely replicate
+them. km output must never be used as the ground truth for benchmarking. A variant
+detected by kmerdet but not by km is not a false positive — it may be a true
+sensitivity improvement.
+
+**Ground truth sources** (in order of reliability):
+
+1. **Orthogonal validation** — ddPCR, independent sequencing, Sanger confirmation
+2. **Gold-standard alignment workflow** — BWA-MEM2 + GATK/Mutect2 on the same data
+3. **Simulated data** — synthetic variants with known VAF (necessary but not sufficient)
+
+km comparison is useful for *concordance analysis* (understanding where the tools
+agree/disagree) and for *regression testing* (catching algorithmic bugs), but the
+benchmark result that matters is accuracy against independent ground truth.
+
+See `docs/features/correctness-and-sensitivity.md` for the full correctness framework.
+
+### Configurable Sensitivity
+
+Different clinical contexts require different sensitivity/specificity tradeoffs.
+The benchmarking framework supports characterizing kmerdet's performance across
+the full operating range via:
+
+- **LOD characterization**: LOD50/LOD80/LOD95 at specified FPR levels
+- **Threshold sweep**: sensitivity × specificity curve across rVAF/QUAL thresholds
+- **Sensitivity presets**: ultra/high/standard/strict parameter combinations
+- **Per-VAF-bin breakdown**: ultra-fine bins down to 0.0001% for liquid biopsy MRD
+
+---
+
 ## What We Benchmark
 
 ### 1. Accuracy (Detection Performance)

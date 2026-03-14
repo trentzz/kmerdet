@@ -42,6 +42,8 @@ THESIS_COLOR     = "#e74c3c"    # red — km/thesis baseline
 KMERDET_COLOR    = "#2980b9"    # blue — kmerdet
 NEUTRAL_COLOR    = "#95a5a6"    # grey — supplementary info
 
+KM_COLOR         = "#e67e22"    # orange — km comparison bars
+
 VARIANT_COLORS = {
     "Substitution": "#3498db",
     "Insertion":    "#2ecc71",
@@ -49,6 +51,10 @@ VARIANT_COLORS = {
     "ITD":          "#f39c12",
     "Complex":      "#9b59b6",
 }
+
+VARIANT_TYPE_ORDER = [
+    "Substitution", "Insertion", "Deletion", "ITD", "Complex",
+]
 
 VAF_BIN_LABELS = ["0–0.1%", "0.1–1%", "1–5%", "5–100%"]
 
@@ -551,6 +557,405 @@ def plot_threshold_sweep(
 
 
 # ---------------------------------------------------------------------------
+# 9. km vs kmerdet comparison (grouped bar chart)
+# ---------------------------------------------------------------------------
+
+def plot_comparison(
+    comparison_tsv: pathlib.Path,
+    out_path: pathlib.Path,
+) -> None:
+    """Grouped bar chart: km vs kmerdet sensitivity by variant type and overall.
+
+    Reads comparison_summary.tsv produced by compare_results.py.
+    """
+    if not comparison_tsv.exists():
+        print("  Skipping comparison plot: file not found.")
+        return
+
+    df = pd.read_csv(comparison_tsv, sep="\t")
+    if df.empty:
+        print("  Skipping comparison plot: empty data.")
+        return
+
+    # Use first parameter set if multiple
+    if "params" in df.columns:
+        first_params = df["params"].iloc[0]
+        df = df[df["params"] == first_params]
+
+    # Collect rows for plotting: overall sensitivity + per-type sensitivity
+    plot_rows = []
+
+    overall = df[(df["category"] == "overall") & (df["metric"] == "sensitivity")]
+    if not overall.empty:
+        row = overall.iloc[0]
+        plot_rows.append({
+            "label": "Overall",
+            "km": _safe_float(row.get("km")) or 0,
+            "kmerdet": _safe_float(row.get("kmerdet")) or 0,
+        })
+
+    for vtype in VARIANT_TYPE_ORDER:
+        type_rows = df[(df["category"] == f"type_{vtype}") & (df["metric"] == "sensitivity")]
+        if not type_rows.empty:
+            row = type_rows.iloc[0]
+            plot_rows.append({
+                "label": vtype,
+                "km": _safe_float(row.get("km")) or 0,
+                "kmerdet": _safe_float(row.get("kmerdet")) or 0,
+            })
+
+    if not plot_rows:
+        print("  Skipping comparison plot: no sensitivity data.")
+        return
+
+    plot_df = pd.DataFrame(plot_rows)
+    n = len(plot_df)
+    x = np.arange(n)
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_WIDE)
+
+    bars_km = ax.bar(x - width / 2, plot_df["km"], width,
+                     label="km", color=KM_COLOR, alpha=0.85)
+    bars_kd = ax.bar(x + width / 2, plot_df["kmerdet"], width,
+                     label="kmerdet", color=KMERDET_COLOR, alpha=0.85)
+
+    # Annotate bars
+    for bars in [bars_km, bars_kd]:
+        for bar in bars:
+            h = bar.get_height()
+            if h > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    h + 0.01,
+                    f"{h:.2f}",
+                    ha="center", va="bottom", fontsize=8,
+                )
+
+    # Thesis baselines
+    ax.axhline(0.77, ls="--", color=THESIS_COLOR, lw=1.0,
+               label="km SNV baseline (77%)", alpha=0.6)
+    ax.axhline(0.38, ls=":", color=THESIS_COLOR, lw=1.0,
+               label="km INDEL baseline (38%)", alpha=0.6)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(plot_df["label"].tolist(), fontsize=10)
+    ax.set_ylim(0, 1.15)
+    ax.set_ylabel("Sensitivity", fontsize=11)
+    ax.set_title("km vs kmerdet Detection Sensitivity", fontsize=12)
+    ax.legend(fontsize=9, loc="upper right")
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
+# 10. Sensitivity vs VAF curve (log-scale, with LOD markers)
+# ---------------------------------------------------------------------------
+
+def plot_sensitivity_vs_vaf_curve(
+    per_vaf_df: pd.DataFrame,
+    out_path: pathlib.Path,
+    km_per_vaf_df: Optional[pd.DataFrame] = None,
+) -> None:
+    """Log-scale sensitivity vs VAF curve with optional km overlay and LOD markers."""
+    if per_vaf_df.empty:
+        print("  Skipping: no per-VAF data for sensitivity curve.")
+        return
+
+    bins = per_vaf_df[per_vaf_df["present"] > 0].copy()
+    if bins.empty:
+        print("  Skipping: no non-empty VAF bins.")
+        return
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_WIDE)
+
+    # Compute bin midpoints as x values
+    if "vaf_low" in bins.columns and "vaf_high" in bins.columns:
+        midpoints = ((bins["vaf_low"] + bins["vaf_high"]) / 2).values
+    else:
+        # Fallback: use index
+        midpoints = np.arange(len(bins))
+
+    senss = np.array([_safe_float(s) or 0.0 for s in bins["sensitivity"]])
+
+    ax.plot(midpoints, senss, color=KMERDET_COLOR, marker="o", lw=2,
+            label="kmerdet", zorder=3)
+
+    # Overlay km data if provided
+    if km_per_vaf_df is not None and not km_per_vaf_df.empty:
+        km_bins = km_per_vaf_df[km_per_vaf_df["present"] > 0].copy()
+        if not km_bins.empty:
+            if "vaf_low" in km_bins.columns and "vaf_high" in km_bins.columns:
+                km_mid = ((km_bins["vaf_low"] + km_bins["vaf_high"]) / 2).values
+            else:
+                km_mid = np.arange(len(km_bins))
+            km_sens = np.array([_safe_float(s) or 0.0 for s in km_bins["sensitivity"]])
+            ax.plot(km_mid, km_sens, color=KM_COLOR, marker="s", lw=2,
+                    ls="--", label="km", zorder=2)
+
+    # Compute and mark LOD50 and LOD80 via linear interpolation
+    sorted_idx = np.argsort(midpoints)
+    sorted_mid = midpoints[sorted_idx]
+    sorted_sens = senss[sorted_idx]
+
+    for target, label_text, ls_style in [(0.5, "LOD50", "--"), (0.8, "LOD80", ":")]:
+        lod_val = None
+        for i in range(len(sorted_sens) - 1):
+            s_low, s_high = sorted_sens[i], sorted_sens[i + 1]
+            if s_low < target <= s_high and s_high != s_low:
+                frac = (target - s_low) / (s_high - s_low)
+                lod_val = sorted_mid[i] + frac * (sorted_mid[i + 1] - sorted_mid[i])
+                break
+            elif s_low >= target:
+                lod_val = sorted_mid[i]
+                break
+
+        if lod_val is not None:
+            ax.axvline(lod_val, ls=ls_style, color=THESIS_COLOR, lw=1.5, alpha=0.7)
+            ax.text(lod_val, 0.02, f"{label_text}\n{lod_val:.2e}",
+                    ha="center", va="bottom", fontsize=8, color=THESIS_COLOR,
+                    rotation=90)
+
+    ax.set_xscale("log")
+    ax.set_ylim(-0.02, 1.05)
+    ax.set_xlabel("True VAF (log scale)", fontsize=11)
+    ax.set_ylabel("Sensitivity", fontsize=11)
+    ax.set_title("Detection Sensitivity vs Variant Allele Frequency", fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
+# 11. Coverage x VAF heatmap
+# ---------------------------------------------------------------------------
+
+def plot_coverage_vaf_heatmap(
+    matrix_data: dict,
+    out_path: pathlib.Path,
+) -> None:
+    """2D heatmap of sensitivity: x=VAF (log scale labels), y=coverage.
+
+    Args:
+        matrix_data: Dict with keys:
+            'vafs': list of VAF values (columns)
+            'coverages': list of coverage values (rows)
+            'sensitivities': 2D list [n_coverages x n_vafs] of sensitivity values
+    """
+    vafs = matrix_data.get("vafs", [])
+    coverages = matrix_data.get("coverages", [])
+    sens_matrix = np.array(matrix_data.get("sensitivities", []))
+
+    if sens_matrix.size == 0:
+        print("  Skipping: no coverage-VAF matrix data.")
+        return
+
+    fig, ax = plt.subplots(figsize=(max(7, len(vafs) * 1.5), max(5, len(coverages) * 0.9)))
+
+    cmap = matplotlib.cm.get_cmap("RdYlGn").copy()
+    im = ax.imshow(sens_matrix, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+
+    # Annotate cells
+    for i in range(len(coverages)):
+        for j in range(len(vafs)):
+            v = sens_matrix[i, j]
+            if not np.isnan(v):
+                text_color = "black" if 0.3 < v < 0.8 else "white"
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=9, color=text_color, fontweight="bold")
+            else:
+                ax.text(j, i, "N/A", ha="center", va="center",
+                        fontsize=8, color="grey")
+
+    # Labels
+    vaf_labels = [f"{v*100:.4g}%" for v in vafs]
+    ax.set_xticks(range(len(vafs)))
+    ax.set_xticklabels(vaf_labels, fontsize=9)
+    ax.set_yticks(range(len(coverages)))
+    ax.set_yticklabels([f"{c:,}x" for c in coverages], fontsize=9)
+    ax.set_xlabel("VAF", fontsize=11)
+    ax.set_ylabel("Coverage", fontsize=11)
+    ax.set_title("Detection Sensitivity: Coverage \u00d7 VAF Matrix", fontsize=12)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Sensitivity", fontsize=10)
+
+    fig.tight_layout()
+    savefig(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
+# 12. INDEL size sensitivity
+# ---------------------------------------------------------------------------
+
+def plot_indel_size_sensitivity(
+    data: dict,
+    out_path: pathlib.Path,
+) -> None:
+    """Line plot of sensitivity vs INDEL size for k=21 and k=31.
+
+    Args:
+        data: Dict with keys:
+            'sizes': list of INDEL sizes
+            'k21_sensitivity': list of sensitivity values at k=21
+            'k31_sensitivity': list of sensitivity values at k=31
+    """
+    sizes = data.get("sizes", [])
+    k21_sens = data.get("k21_sensitivity", [])
+    k31_sens = data.get("k31_sensitivity", [])
+
+    if not sizes:
+        print("  Skipping: no INDEL size data.")
+        return
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_WIDE)
+
+    if k21_sens:
+        ax.plot(sizes, k21_sens, color=NEUTRAL_COLOR, marker="D", lw=2,
+                ls="--", label="k=21", zorder=2)
+    if k31_sens:
+        ax.plot(sizes, k31_sens, color=KMERDET_COLOR, marker="o", lw=2,
+                ls="-", label="k=31", zorder=3)
+
+    ax.set_ylim(-0.02, 1.05)
+    ax.set_xlabel("INDEL Size (bp)", fontsize=11)
+    ax.set_ylabel("Sensitivity", fontsize=11)
+    ax.set_title("INDEL Detection Sensitivity by Size and k-mer Length", fontsize=12)
+    ax.legend(fontsize=10)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
+# 13. LOD characterization
+# ---------------------------------------------------------------------------
+
+def plot_lod_characterization(
+    per_vaf_df: pd.DataFrame,
+    lod_metrics: dict,
+    out_path: pathlib.Path,
+) -> None:
+    """Sensitivity curve with LOD50/LOD80 markers and shaded sub-LOD region."""
+    if per_vaf_df.empty:
+        print("  Skipping: no per-VAF data for LOD characterization.")
+        return
+
+    bins = per_vaf_df[per_vaf_df["present"] > 0].copy()
+    if bins.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_WIDE)
+
+    # Compute midpoints
+    if "vaf_low" in bins.columns and "vaf_high" in bins.columns:
+        midpoints = ((bins["vaf_low"] + bins["vaf_high"]) / 2).values
+    else:
+        midpoints = np.arange(len(bins))
+
+    senss = np.array([_safe_float(s) or 0.0 for s in bins["sensitivity"]])
+
+    ax.plot(midpoints, senss, color=KMERDET_COLOR, marker="o", lw=2.5,
+            label="Sensitivity curve", zorder=3)
+
+    # Horizontal lines at 50% and 80%
+    ax.axhline(0.5, ls=":", color=NEUTRAL_COLOR, lw=1.2, alpha=0.7, label="50% sensitivity")
+    ax.axhline(0.8, ls=":", color=NEUTRAL_COLOR, lw=1.2, alpha=0.7, label="80% sensitivity")
+
+    # Vertical lines at LOD50 and LOD80
+    lod50 = lod_metrics.get("lod50")
+    lod80 = lod_metrics.get("lod80")
+
+    if lod50 is not None:
+        ax.axvline(lod50, ls="--", color=THESIS_COLOR, lw=2, alpha=0.8)
+        ax.text(lod50 * 1.2, 0.52, f"LOD50 = {lod50:.2e}",
+                fontsize=10, color=THESIS_COLOR, fontweight="bold")
+        # Shade region below LOD50
+        ax.axvspan(ax.get_xlim()[0] if ax.get_xlim()[0] > 0 else 1e-8,
+                   lod50, alpha=0.08, color=THESIS_COLOR, zorder=0)
+
+    if lod80 is not None:
+        ax.axvline(lod80, ls="--", color=KM_COLOR, lw=2, alpha=0.8)
+        ax.text(lod80 * 1.2, 0.82, f"LOD80 = {lod80:.2e}",
+                fontsize=10, color=KM_COLOR, fontweight="bold")
+
+    ax.set_xscale("log")
+    ax.set_ylim(-0.02, 1.05)
+    ax.set_xlabel("True VAF (log scale)", fontsize=11)
+    ax.set_ylabel("Sensitivity", fontsize=11)
+    ax.set_title("Limit of Detection (LOD) Characterization", fontsize=12)
+    ax.legend(fontsize=9, loc="lower right")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
+# 14. False Negative breakdown by failure reason
+# ---------------------------------------------------------------------------
+
+def plot_fn_breakdown(
+    fn_reasons_df: pd.DataFrame,
+    out_path: pathlib.Path,
+) -> None:
+    """Stacked bar chart of FN counts by failure reason across VAF bins.
+
+    Args:
+        fn_reasons_df: DataFrame with columns:
+            'vaf_bin': VAF bin label
+            'no_kmer_count': count of FNs due to no k-mer count
+            'threshold_rejected': count of FNs rejected by threshold
+            'graph_pruned': count of FNs lost during graph pruning
+            'path_not_found': count of FNs where path was not found
+            'other': count of FNs due to other reasons
+    """
+    if fn_reasons_df.empty:
+        print("  Skipping: no FN breakdown data.")
+        return
+
+    reason_cols = ["no_kmer_count", "threshold_rejected", "graph_pruned",
+                   "path_not_found", "other"]
+    existing_cols = [c for c in reason_cols if c in fn_reasons_df.columns]
+
+    if not existing_cols:
+        print("  Skipping: no reason columns in FN breakdown data.")
+        return
+
+    reason_colors = {
+        "no_kmer_count":      "#e74c3c",    # red
+        "threshold_rejected": "#f39c12",    # orange
+        "graph_pruned":       "#9b59b6",    # purple
+        "path_not_found":     "#3498db",    # blue
+        "other":              "#95a5a6",    # grey
+    }
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE_WIDE)
+
+    x = np.arange(len(fn_reasons_df))
+    bottoms = np.zeros(len(fn_reasons_df))
+
+    for col in existing_cols:
+        vals = fn_reasons_df[col].fillna(0).values
+        color = reason_colors.get(col, NEUTRAL_COLOR)
+        label = col.replace("_", " ").title()
+        ax.bar(x, vals, bottom=bottoms, label=label, color=color, alpha=0.85)
+        bottoms += vals
+
+    bin_labels = fn_reasons_df.get("vaf_bin", fn_reasons_df.index).tolist()
+    ax.set_xticks(x)
+    ax.set_xticklabels(bin_labels, fontsize=9, rotation=30, ha="right")
+    ax.set_xlabel("VAF Bin", fontsize=11)
+    ax.set_ylabel("Number of False Negatives", fontsize=11)
+    ax.set_title("False Negative Breakdown by Failure Reason", fontsize=12)
+    ax.legend(fontsize=9, loc="upper right")
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, out_path)
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher: load all available data and produce all plots
 # ---------------------------------------------------------------------------
 
@@ -650,11 +1055,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--sweep",         type=pathlib.Path, help="threshold_sweep.tsv")
     p.add_argument("--multi-k-per-type", type=pathlib.Path,
                    help="per_type.tsv from a multi-k run for comparison")
+    p.add_argument("--comparison",    type=pathlib.Path,
+                   help="comparison_summary.tsv from compare_results.py for km vs kmerdet plot")
     p.add_argument("--output-dir",    type=pathlib.Path, default=pathlib.Path("figures"),
                    help="Directory to write figures [default: figures/]")
     p.add_argument("--format",        choices=["png", "pdf", "svg"], default="png",
                    help="Figure format [default: png]")
     p.add_argument("--dpi",           type=int, default=150, help="Figure DPI [default: 150]")
+
+    # Sensitivity-first plot flags
+    p.add_argument("--sensitivity-curve", action="store_true",
+                   help="Generate sensitivity vs VAF curve (log-scale) plot")
+    p.add_argument("--coverage-matrix", type=pathlib.Path,
+                   help="Path to coverage-VAF matrix data JSON for heatmap plot")
+    p.add_argument("--indel-size-data", type=pathlib.Path,
+                   help="Path to INDEL size sensitivity data JSON for line plot")
+    p.add_argument("--lod", action="store_true",
+                   help="Generate LOD characterization plot (uses per-VAF data)")
+    p.add_argument("--fn-breakdown", type=pathlib.Path,
+                   help="Path to FN breakdown data TSV for stacked bar chart")
+
     return p
 
 
@@ -747,6 +1167,114 @@ def main(argv: Optional[list[str]] = None) -> int:
         data["sweep"],
         out_dir / f"threshold_sweep.{ext}",
     )
+
+    # 9. km vs kmerdet comparison
+    if args.comparison:
+        plot_comparison(
+            args.comparison,
+            out_dir / f"km_vs_kmerdet_comparison.{ext}",
+        )
+    else:
+        # Auto-discover comparison_summary.tsv in results_dir
+        if args.results_dir:
+            candidate = args.results_dir / "comparison_summary.tsv"
+            if candidate.exists():
+                plot_comparison(candidate, out_dir / f"km_vs_kmerdet_comparison.{ext}")
+            else:
+                print("  Skipping km_vs_kmerdet_comparison (no --comparison provided).")
+        else:
+            print("  Skipping km_vs_kmerdet_comparison (no --comparison provided).")
+
+    # 10. Sensitivity vs VAF curve (log-scale)
+    if args.sensitivity_curve:
+        plot_sensitivity_vs_vaf_curve(
+            data["per_vaf"],
+            out_dir / f"sensitivity_vs_vaf_curve.{ext}",
+        )
+    elif not data["per_vaf"].empty and "vaf_low" in data["per_vaf"].columns:
+        # Auto-generate if per-VAF data has bin boundaries
+        plot_sensitivity_vs_vaf_curve(
+            data["per_vaf"],
+            out_dir / f"sensitivity_vs_vaf_curve.{ext}",
+        )
+
+    # 11. Coverage x VAF heatmap
+    if args.coverage_matrix and args.coverage_matrix.exists():
+        try:
+            with open(args.coverage_matrix) as f:
+                matrix_data = json.load(f)
+            plot_coverage_vaf_heatmap(
+                matrix_data,
+                out_dir / f"coverage_vaf_heatmap.{ext}",
+            )
+        except Exception as e:
+            print(f"  Warning: could not load coverage matrix: {e}", file=sys.stderr)
+    else:
+        print("  Skipping coverage_vaf_heatmap (no --coverage-matrix provided).")
+
+    # 12. INDEL size sensitivity
+    if args.indel_size_data and args.indel_size_data.exists():
+        try:
+            with open(args.indel_size_data) as f:
+                indel_data = json.load(f)
+            plot_indel_size_sensitivity(
+                indel_data,
+                out_dir / f"indel_size_sensitivity.{ext}",
+            )
+        except Exception as e:
+            print(f"  Warning: could not load INDEL size data: {e}", file=sys.stderr)
+    else:
+        print("  Skipping indel_size_sensitivity (no --indel-size-data provided).")
+
+    # 13. LOD characterization
+    if args.lod and not data["per_vaf"].empty:
+        # Compute LOD from per-VAF data
+        from docs.benchmarking.framework.analyze_results import compute_lod as _compute_lod
+        lod_metrics_data = {}
+        try:
+            lod_metrics_data = _compute_lod(data["per_vaf"])
+        except Exception:
+            # Inline LOD computation if import fails
+            per_vaf = data["per_vaf"]
+            valid = per_vaf[per_vaf["present"] > 0].copy()
+            if not valid.empty and "vaf_low" in valid.columns:
+                valid = valid.sort_values("vaf_low")
+                midpts = ((valid["vaf_low"] + valid["vaf_high"]) / 2).values
+                sens_vals = np.array([_safe_float(s) or 0.0 for s in valid["sensitivity"]])
+                for target, key in [(0.5, "lod50"), (0.8, "lod80")]:
+                    for i in range(len(sens_vals) - 1):
+                        if sens_vals[i] < target <= sens_vals[i + 1] and sens_vals[i + 1] != sens_vals[i]:
+                            frac = (target - sens_vals[i]) / (sens_vals[i + 1] - sens_vals[i])
+                            lod_metrics_data[key] = midpts[i] + frac * (midpts[i + 1] - midpts[i])
+                            break
+                        elif sens_vals[i] >= target:
+                            lod_metrics_data[key] = midpts[i]
+                            break
+
+        # Also check metrics.json for pre-computed LOD
+        if not lod_metrics_data and "lod" in data["metrics"]:
+            lod_metrics_data = data["metrics"]["lod"]
+
+        plot_lod_characterization(
+            data["per_vaf"],
+            lod_metrics_data,
+            out_dir / f"lod_characterization.{ext}",
+        )
+    else:
+        print("  Skipping lod_characterization (no --lod flag or no per-VAF data).")
+
+    # 14. FN breakdown
+    if args.fn_breakdown and args.fn_breakdown.exists():
+        try:
+            fn_df = pd.read_csv(args.fn_breakdown, sep="\t")
+            plot_fn_breakdown(
+                fn_df,
+                out_dir / f"fn_breakdown.{ext}",
+            )
+        except Exception as e:
+            print(f"  Warning: could not load FN breakdown data: {e}", file=sys.stderr)
+    else:
+        print("  Skipping fn_breakdown (no --fn-breakdown provided).")
 
     print(f"\nAll figures saved to: {out_dir}/")
     return 0
