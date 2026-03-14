@@ -61,6 +61,28 @@ format = "tsv"
 # Omit column headers from output. Default: false
 # no_header = true
 
+# ── Sensitivity settings ─────────────────────────────────────────────
+# Controls the sensitivity/specificity tradeoff. A named preset sets
+# coordinated defaults; individual values override the preset.
+#
+# Available presets:
+#   ultra    — count=1, ratio=1e-6,  min_qual=0,  min_rvaf=0       (find everything)
+#   high     — count=1, ratio=1e-4,  min_qual=5,  min_rvaf=0.00001
+#   standard — count=2, ratio=0.05,  min_qual=10, min_rvaf=0.0001  (default)
+#   strict   — count=3, ratio=0.05,  min_qual=20, min_rvaf=0.001   (high confidence only)
+[sensitivity]
+# preset = "standard"
+
+# Override individual values (these take precedence over the preset):
+# count = 2           # min absolute k-mer count for walking
+# ratio = 0.05        # min ratio threshold for walking
+# min_qual = 10.0     # min Phred QUAL score for reporting
+# min_rvaf = 0.0001   # min rVAF for reporting
+# min_coverage = 3    # min k-mer coverage for reporting
+# adaptive = false    # enable adaptive thresholds
+# bidirectional = false  # enable bidirectional walking
+# bootstrap = false   # enable bootstrap CIs
+
 # ── Runtime settings ─────────────────────────────────────────────────
 [runtime]
 # Number of threads (0 = all available cores). Default: 0

@@ -118,6 +118,29 @@ pub struct DetectArgs {
     /// Diagnostic report verbosity level [default: summary]
     #[arg(long, value_enum, default_value = "summary")]
     pub report_level: crate::report::ReportLevel,
+
+    /// Sensitivity preset: ultra, high, standard, strict.
+    ///
+    /// Sets coordinated defaults for count, ratio, min-qual, min-rvaf, and
+    /// min-coverage. Explicit CLI flags override the preset values.
+    /// Can also be configured in the [sensitivity] section of the config file.
+    #[arg(long, value_name = "PRESET")]
+    pub sensitivity: Option<String>,
+
+    /// Minimum QUAL (Phred-scaled p-value) for reporting a variant.
+    /// Calls with QUAL below this are excluded from output.
+    #[arg(long)]
+    pub min_qual: Option<f64>,
+
+    /// Minimum rVAF for reporting a variant.
+    /// Calls with rVAF below this are excluded from output.
+    #[arg(long)]
+    pub min_rvaf: Option<f64>,
+
+    /// Minimum k-mer coverage for reporting a variant.
+    /// Calls with min_coverage below this are excluded from output.
+    #[arg(long)]
+    pub min_cov: Option<u64>,
 }
 
 /// Open a jellyfish database using the pure Rust reader.
@@ -530,6 +553,104 @@ impl DetectArgs {
                 self.cluster = v;
             }
         }
+
+        // Apply [sensitivity] section: preset first, then individual overrides.
+        if !is_set("sensitivity") {
+            if cfg.sensitivity.preset.is_some() {
+                self.sensitivity = cfg.sensitivity.preset.clone();
+            }
+        }
+        if !is_set("min_qual") {
+            if let Some(v) = cfg.sensitivity.min_qual {
+                self.min_qual = Some(v);
+            }
+        }
+        if !is_set("min_rvaf") {
+            if let Some(v) = cfg.sensitivity.min_rvaf {
+                self.min_rvaf = Some(v);
+            }
+        }
+        if !is_set("min_cov") {
+            if let Some(v) = cfg.sensitivity.min_coverage {
+                self.min_cov = Some(v);
+            }
+        }
+        // Sensitivity section can also set count/ratio if not already set by
+        // [detect] or CLI.
+        if !is_set("count") && cfg.detect.count.is_none() {
+            if let Some(v) = cfg.sensitivity.count {
+                self.count = v;
+            }
+        }
+        if !is_set("ratio") && cfg.detect.ratio.is_none() {
+            if let Some(v) = cfg.sensitivity.ratio {
+                self.ratio = v;
+            }
+        }
+        if !is_set("adaptive") {
+            if let Some(true) = cfg.sensitivity.adaptive {
+                self.adaptive = true;
+            }
+        }
+        if !is_set("bidirectional") {
+            if let Some(true) = cfg.sensitivity.bidirectional {
+                self.bidirectional = true;
+            }
+        }
+        if !is_set("bootstrap") {
+            if let Some(true) = cfg.sensitivity.bootstrap {
+                self.bootstrap = true;
+            }
+        }
+    }
+
+    /// Apply a sensitivity preset, overriding count/ratio and setting
+    /// min_qual/min_rvaf/min_cov defaults if not already explicitly set.
+    pub(crate) fn apply_sensitivity_preset(&mut self, matches: &clap::ArgMatches) -> Result<()> {
+        let preset_name = match &self.sensitivity {
+            Some(name) => name.clone(),
+            None => return Ok(()),
+        };
+
+        let preset = crate::config::SensitivityPresetValues::from_name(&preset_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown sensitivity preset '{}'; valid presets: {}",
+                    preset_name,
+                    crate::config::SensitivityPresetValues::preset_names().join(", ")
+                )
+            })?;
+
+        let is_set = |id| super::is_subcommand_arg_set(matches, id);
+
+        // Preset overrides count/ratio unless explicitly set on CLI.
+        if !is_set("count") {
+            self.count = preset.count;
+        }
+        if !is_set("ratio") {
+            self.ratio = preset.ratio;
+        }
+        if self.min_qual.is_none() && !is_set("min_qual") {
+            self.min_qual = Some(preset.min_qual);
+        }
+        if self.min_rvaf.is_none() && !is_set("min_rvaf") {
+            self.min_rvaf = Some(preset.min_rvaf);
+        }
+        if self.min_cov.is_none() && !is_set("min_cov") {
+            self.min_cov = Some(preset.min_coverage);
+        }
+
+        tracing::info!(
+            "sensitivity preset '{}': count={}, ratio={}, min_qual={}, min_rvaf={}, min_cov={}",
+            preset_name,
+            self.count,
+            self.ratio,
+            self.min_qual.unwrap_or(0.0),
+            self.min_rvaf.unwrap_or(0.0),
+            self.min_cov.unwrap_or(0),
+        );
+
+        Ok(())
     }
 }
 
@@ -542,6 +663,9 @@ pub fn run(
     if let Some(cfg) = cfg {
         args.apply_config(cfg, matches);
     }
+
+    // Apply sensitivity preset (after config, so CLI > config > preset > defaults).
+    args.apply_sensitivity_preset(matches)?;
 
     // Check for multi-k mode first.
     if let Some(k_values) = args.multi_k.clone() {
@@ -578,7 +702,7 @@ fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
     let prune_config = build_prune_config(&args);
 
     // 5. Run detection pipeline.
-    let all_calls = run_detection_pipeline(
+    let (all_calls, traces) = run_detection_pipeline(
         &args,
         db.as_ref(),
         &db_name,
@@ -588,13 +712,17 @@ fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         prune_config.as_ref(),
     )?;
 
-    // 6. Write diagnostic report if --report-dir is set.
+    // 6. Apply sensitivity thresholds (min_qual, min_rvaf, min_cov).
+    let all_calls = apply_sensitivity_thresholds(all_calls, &args);
+
+    // 7. Write diagnostic report if --report-dir is set.
     if let Some(ref report_dir) = args.report_dir {
         let total_time_ms = pipeline_start.elapsed().as_millis() as u64;
         if let Err(e) = write_report(
             report_dir,
             args.report_level,
             &all_calls,
+            &traces,
             n_targets,
             total_time_ms,
             k,
@@ -606,7 +734,7 @@ fn run_single_k(args: DetectArgs, global: &super::GlobalOptions) -> Result<()> {
         }
     }
 
-    // 7. Write output.
+    // 8. Write output.
     write_output(&all_calls, global)?;
 
     Ok(())
@@ -657,7 +785,7 @@ fn run_multi_k(
         let walker_config = build_walker_config(&args, db.as_ref(), &targets, k)?;
 
         // Run detection at this k value.
-        let calls = run_detection_pipeline(
+        let (calls, _traces) = run_detection_pipeline(
             &args,
             db.as_ref(),
             &db_name,
@@ -805,6 +933,7 @@ fn build_prune_config(args: &DetectArgs) -> Option<PruneConfig> {
 }
 
 /// Run the detection pipeline for a single k value: walk, graph, classify, quantify.
+/// Returns variant calls and optional detection traces (when tracing is enabled).
 fn run_detection_pipeline(
     args: &DetectArgs,
     db: &dyn KmerDatabase,
@@ -813,7 +942,7 @@ fn run_detection_pipeline(
     targets: &[Target],
     walker_config: &WalkerConfig,
     prune_config: Option<&PruneConfig>,
-) -> Result<Vec<VariantCall>> {
+) -> Result<(Vec<VariantCall>, Vec<DetectionTrace>)> {
     // Set up progress bar.
     let pb = ProgressBar::new(targets.len() as u64);
     pb.set_style(
@@ -834,8 +963,8 @@ fn run_detection_pipeline(
             .with_context(|| format!("creating debug-graph directory: {}", dir.display()))?;
     }
 
-    // If --trace is set, ensure the output directory exists.
-    let trace_enabled = args.trace.is_some();
+    // Enable tracing if --trace or --report-dir is set.
+    let trace_enabled = args.trace.is_some() || args.report_dir.is_some();
     if let Some(ref dir) = args.trace {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating trace directory: {}", dir.display()))?;
@@ -982,7 +1111,72 @@ fn run_detection_pipeline(
         targets.len(),
     );
 
-    Ok(all_calls)
+    Ok((all_calls, all_traces))
+}
+
+/// Apply sensitivity thresholds (min_qual, min_rvaf, min_cov) to filter
+/// variant calls. Reference calls are always kept.
+fn apply_sensitivity_thresholds(calls: Vec<VariantCall>, args: &DetectArgs) -> Vec<VariantCall> {
+    let min_qual = args.min_qual.unwrap_or(0.0);
+    let min_rvaf = args.min_rvaf.unwrap_or(0.0);
+    let min_cov = args.min_cov.unwrap_or(0);
+
+    // Skip filtering if all thresholds are at their most permissive.
+    if min_qual <= 0.0 && min_rvaf <= 0.0 && min_cov == 0 {
+        return calls;
+    }
+
+    let pre_count = calls
+        .iter()
+        .filter(|c| c.variant_type != VariantType::Reference)
+        .count();
+
+    let filtered: Vec<VariantCall> = calls
+        .into_iter()
+        .filter(|call| {
+            // Always keep reference calls.
+            if call.variant_type == VariantType::Reference {
+                return true;
+            }
+            // Apply QUAL threshold.
+            if min_qual > 0.0 {
+                if let Some(qual) = call.qual {
+                    if qual < min_qual {
+                        return false;
+                    }
+                } else {
+                    // No QUAL computed; exclude if threshold is set.
+                    return false;
+                }
+            }
+            // Apply rVAF threshold.
+            if min_rvaf > 0.0 && call.rvaf < min_rvaf {
+                return false;
+            }
+            // Apply coverage threshold.
+            if min_cov > 0 && call.min_coverage < min_cov {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let post_count = filtered
+        .iter()
+        .filter(|c| c.variant_type != VariantType::Reference)
+        .count();
+    let removed = pre_count - post_count;
+    if removed > 0 {
+        tracing::info!(
+            "sensitivity thresholds removed {} variant calls (min_qual={}, min_rvaf={}, min_cov={})",
+            removed,
+            min_qual,
+            min_rvaf,
+            min_cov,
+        );
+    }
+
+    filtered
 }
 
 /// Write variant calls to the output destination.
@@ -1010,11 +1204,12 @@ fn write_output(all_calls: &[VariantCall], global: &super::GlobalOptions) -> Res
     Ok(())
 }
 
-/// Write diagnostic report from detection results.
+/// Write diagnostic report from detection results, using trace data when available.
 fn write_report(
     report_dir: &std::path::Path,
     report_level: crate::report::ReportLevel,
     all_calls: &[VariantCall],
+    traces: &[DetectionTrace],
     n_targets: usize,
     total_time_ms: u64,
     k: u8,
@@ -1023,6 +1218,12 @@ fn write_report(
     use crate::report::*;
 
     let writer = ReportWriter::new(report_dir.to_path_buf(), report_level)?;
+
+    // Build a lookup from target name to trace for enriching reports.
+    let trace_by_target: std::collections::HashMap<&str, &DetectionTrace> = traces
+        .iter()
+        .map(|t| (t.target.as_str(), t))
+        .collect();
 
     // Group calls by target to build per-target summaries.
     let mut calls_by_target: indexmap::IndexMap<String, Vec<&VariantCall>> =
@@ -1035,7 +1236,6 @@ fn write_report(
     }
 
     // Count how many targets failed (processed but produced no calls at all).
-    // This is an approximation: targets that failed in process_target are not in all_calls.
     let targets_with_calls = calls_by_target.len();
     let targets_failed = n_targets.saturating_sub(targets_with_calls);
 
@@ -1053,24 +1253,19 @@ fn write_report(
         let n_variants = variant_calls.len();
         total_variants += n_variants;
 
-        // Determine result type: use the first non-reference variant type, or "Reference".
         let result_type = if let Some(vc) = variant_calls.first() {
             vc.variant_type.to_string()
         } else {
             "Reference".to_string()
         };
 
-        // Best rVAF among variant calls (or 1.0 for ref-only).
         let rvaf = variant_calls
             .iter()
             .map(|c| c.rvaf)
             .reduce(f64::max)
             .unwrap_or(1.0);
 
-        // Coverage from the reference call or the first call.
         let coverage = calls.first().map(|c| c.min_coverage).unwrap_or(0);
-
-        // n_paths = total calls for this target (ref + alt).
         let n_paths = calls.len();
 
         if n_variants > 0 {
@@ -1104,16 +1299,15 @@ fn write_report(
 
             let decision_text = build_decision_text(&result_type, &variant_calls);
 
+            // Use trace data to populate walking/graph/path stats.
+            let trace = trace_by_target.get(target_name.as_str());
             let target_result = TargetResult {
                 target: target_name.clone(),
                 result_type,
                 variants,
-                // These fields require data from the walker/graph internals that we
-                // don't have at this level. Set to 0 for now; a follow-up will hook
-                // into the walker and graph modules to populate them.
-                n_ref_kmers: 0,
-                n_walked_kmers: 0,
-                n_graph_nodes: 0,
+                n_ref_kmers: trace.map_or(0, |t| t.walking.reference_kmers),
+                n_walked_kmers: trace.map_or(0, |t| t.walking.total_nodes),
+                n_graph_nodes: trace.map_or(0, |t| t.graph.total_nodes),
                 n_paths,
                 decision_text,
             };

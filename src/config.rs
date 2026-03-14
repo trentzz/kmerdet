@@ -11,6 +11,7 @@ pub struct Config {
     pub filter: FilterConfig,
     pub output: OutputConfig,
     pub runtime: RuntimeConfig,
+    pub sensitivity: SensitivityConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -50,6 +51,162 @@ pub struct OutputConfig {
 pub struct RuntimeConfig {
     pub threads: Option<usize>,
     pub verbose: Option<u8>,
+}
+
+/// Sensitivity configuration — controls the sensitivity/specificity tradeoff.
+///
+/// These parameters can be set individually for fine-grained control, or a named
+/// `preset` can be used to set coordinated defaults. Individual values always
+/// override the preset.
+///
+/// # Example TOML
+///
+/// ```toml
+/// [sensitivity]
+/// preset = "high"      # sets defaults, individual values below override
+/// count = 1            # min absolute k-mer count for walking
+/// ratio = 0.0001       # min ratio threshold for walking
+/// min_qual = 5.0       # min Phred QUAL score for reporting
+/// min_rvaf = 0.00001   # min rVAF for reporting
+/// min_coverage = 1     # min k-mer coverage for reporting
+/// ```
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
+pub struct SensitivityConfig {
+    /// Named preset: "ultra", "high", "standard", "strict".
+    /// Sets coordinated defaults; individual fields override.
+    pub preset: Option<String>,
+    /// Min absolute k-mer count for walk extension.
+    pub count: Option<u32>,
+    /// Min count ratio threshold for walk extension.
+    pub ratio: Option<f64>,
+    /// Min Phred QUAL score for reporting a variant call.
+    pub min_qual: Option<f64>,
+    /// Min rVAF for reporting a variant call.
+    pub min_rvaf: Option<f64>,
+    /// Min k-mer coverage for reporting a variant call.
+    pub min_coverage: Option<u64>,
+    /// Enable adaptive thresholds.
+    pub adaptive: Option<bool>,
+    /// Enable bidirectional walking.
+    pub bidirectional: Option<bool>,
+    /// Enable bootstrap CIs.
+    pub bootstrap: Option<bool>,
+}
+
+/// Built-in sensitivity preset values.
+#[derive(Debug, Clone, Copy)]
+pub struct SensitivityPresetValues {
+    pub count: u32,
+    pub ratio: f64,
+    pub min_qual: f64,
+    pub min_rvaf: f64,
+    pub min_coverage: u64,
+}
+
+impl SensitivityPresetValues {
+    /// Look up a named preset. Returns `None` for unknown names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "ultra" => Some(Self {
+                count: 1,
+                ratio: 1e-6,
+                min_qual: 0.0,
+                min_rvaf: 0.0,
+                min_coverage: 1,
+            }),
+            "high" => Some(Self {
+                count: 1,
+                ratio: 1e-4,
+                min_qual: 5.0,
+                min_rvaf: 0.00001,
+                min_coverage: 1,
+            }),
+            "standard" => Some(Self {
+                count: 2,
+                ratio: 0.05,
+                min_qual: 10.0,
+                min_rvaf: 0.0001,
+                min_coverage: 3,
+            }),
+            "strict" => Some(Self {
+                count: 3,
+                ratio: 0.05,
+                min_qual: 20.0,
+                min_rvaf: 0.001,
+                min_coverage: 5,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Return all known preset names.
+    pub fn preset_names() -> &'static [&'static str] {
+        &["ultra", "high", "standard", "strict"]
+    }
+}
+
+/// Resolved sensitivity parameters — all fields are concrete values.
+#[derive(Debug, Clone)]
+pub struct ResolvedSensitivity {
+    pub count: u32,
+    pub ratio: f64,
+    pub min_qual: f64,
+    pub min_rvaf: f64,
+    pub min_coverage: u64,
+    pub adaptive: bool,
+    pub bidirectional: bool,
+    pub bootstrap: bool,
+}
+
+impl Default for ResolvedSensitivity {
+    fn default() -> Self {
+        let standard = SensitivityPresetValues::from_name("standard").unwrap();
+        Self {
+            count: standard.count,
+            ratio: standard.ratio,
+            min_qual: standard.min_qual,
+            min_rvaf: standard.min_rvaf,
+            min_coverage: standard.min_coverage,
+            adaptive: false,
+            bidirectional: false,
+            bootstrap: false,
+        }
+    }
+}
+
+impl SensitivityConfig {
+    /// Resolve a `SensitivityConfig` into concrete values.
+    ///
+    /// Resolution order (highest priority first):
+    /// 1. Explicit fields in this config
+    /// 2. Preset defaults (if `preset` is set)
+    /// 3. Hard-coded "standard" defaults
+    pub fn resolve(&self) -> Result<ResolvedSensitivity> {
+        // Start from the preset or standard defaults.
+        let base = if let Some(ref name) = self.preset {
+            SensitivityPresetValues::from_name(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown sensitivity preset '{}'; valid presets: {}",
+                    name,
+                    SensitivityPresetValues::preset_names().join(", ")
+                )
+            })?
+        } else {
+            SensitivityPresetValues::from_name("standard").unwrap()
+        };
+
+        Ok(ResolvedSensitivity {
+            count: self.count.unwrap_or(base.count),
+            ratio: self.ratio.unwrap_or(base.ratio),
+            min_qual: self.min_qual.unwrap_or(base.min_qual),
+            min_rvaf: self.min_rvaf.unwrap_or(base.min_rvaf),
+            min_coverage: self.min_coverage.unwrap_or(base.min_coverage),
+            adaptive: self.adaptive.unwrap_or(false),
+            bidirectional: self.bidirectional.unwrap_or(false),
+            bootstrap: self.bootstrap.unwrap_or(false),
+        })
+    }
 }
 
 impl Config {
@@ -260,5 +417,101 @@ some_future_option = "hello"
 "#;
         let cfg = Config::from_str(toml).unwrap();
         assert_eq!(cfg.detect.count, Some(3));
+    }
+
+    #[test]
+    fn test_sensitivity_config_preset_only() {
+        let toml = r#"
+[sensitivity]
+preset = "ultra"
+"#;
+        let cfg = Config::from_str(toml).unwrap();
+        let resolved = cfg.sensitivity.resolve().unwrap();
+        assert_eq!(resolved.count, 1);
+        assert!((resolved.ratio - 1e-6).abs() < 1e-12);
+        assert_eq!(resolved.min_qual, 0.0);
+        assert_eq!(resolved.min_rvaf, 0.0);
+        assert_eq!(resolved.min_coverage, 1);
+    }
+
+    #[test]
+    fn test_sensitivity_config_preset_with_override() {
+        let toml = r#"
+[sensitivity]
+preset = "high"
+count = 2
+min_qual = 15.0
+"#;
+        let cfg = Config::from_str(toml).unwrap();
+        let resolved = cfg.sensitivity.resolve().unwrap();
+        // count and min_qual are overridden, rest comes from "high" preset
+        assert_eq!(resolved.count, 2);
+        assert!((resolved.ratio - 1e-4).abs() < 1e-12);
+        assert_eq!(resolved.min_qual, 15.0);
+        assert!((resolved.min_rvaf - 0.00001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_sensitivity_config_no_preset() {
+        let toml = r#"
+[sensitivity]
+count = 5
+ratio = 0.001
+min_qual = 30.0
+"#;
+        let cfg = Config::from_str(toml).unwrap();
+        let resolved = cfg.sensitivity.resolve().unwrap();
+        assert_eq!(resolved.count, 5);
+        assert!((resolved.ratio - 0.001).abs() < 1e-12);
+        assert_eq!(resolved.min_qual, 30.0);
+        // Unset fields fall back to "standard" defaults
+        assert!((resolved.min_rvaf - 0.0001).abs() < 1e-12);
+        assert_eq!(resolved.min_coverage, 3);
+    }
+
+    #[test]
+    fn test_sensitivity_config_unknown_preset() {
+        let toml = r#"
+[sensitivity]
+preset = "nonexistent"
+"#;
+        let cfg = Config::from_str(toml).unwrap();
+        let result = cfg.sensitivity.resolve();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("nonexistent"));
+        assert!(err.contains("ultra"));
+    }
+
+    #[test]
+    fn test_sensitivity_default_is_standard() {
+        let cfg = Config::from_str("").unwrap();
+        let resolved = cfg.sensitivity.resolve().unwrap();
+        assert_eq!(resolved.count, 2);
+        assert!((resolved.ratio - 0.05).abs() < 1e-12);
+        assert_eq!(resolved.min_qual, 10.0);
+    }
+
+    #[test]
+    fn test_sensitivity_all_presets() {
+        for name in SensitivityPresetValues::preset_names() {
+            let values = SensitivityPresetValues::from_name(name);
+            assert!(values.is_some(), "preset '{}' should exist", name);
+        }
+    }
+
+    #[test]
+    fn test_sensitivity_strict_values() {
+        let toml = r#"
+[sensitivity]
+preset = "strict"
+"#;
+        let cfg = Config::from_str(toml).unwrap();
+        let resolved = cfg.sensitivity.resolve().unwrap();
+        assert_eq!(resolved.count, 3);
+        assert!((resolved.ratio - 0.05).abs() < 1e-12);
+        assert_eq!(resolved.min_qual, 20.0);
+        assert!((resolved.min_rvaf - 0.001).abs() < 1e-12);
+        assert_eq!(resolved.min_coverage, 5);
     }
 }
